@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+coverage
+tests
+*.md
+.DS_Store
+.cursor
+scripts
+scripts/clear-db-except-superadmin.ts
+product-browser-business-flow-plan.md
+eslint.config.mjs
+jest.config.ts
+cloudrun.env.yaml
