@@ -161,6 +161,19 @@ async function buildPlayerListFilter(q: ListPlayerQuery, timeZone: string): Prom
     conditions.push(textFieldCondition("phone", phone, trimUndef(q.phone_op)));
   }
 
+  const userType = trimUndef(q.userType);
+  if (userType) {
+    const normalized = userType.toLowerCase();
+    if (normalized === "trader" || normalized === "ib") {
+      const op = trimUndef(q.userType_op) || "equals";
+      if (op === "notEquals") {
+        conditions.push({ userType: { $ne: normalized } });
+      } else {
+        conditions.push({ userType: normalized });
+      }
+    }
+  }
+
   const exchangeName = trimUndef(q.exchangeName);
   if (exchangeName) {
     const exFilter = textFieldCondition("name", exchangeName, trimUndef(q.exchangeName_op));
@@ -247,6 +260,8 @@ export async function createPlayer(
     exchangeId: string;
     playerId: string;
     phone: string;
+    email?: string | null;
+    userType: "trader" | "ib";
     regularBonusPercentage: number;
     firstDepositBonusPercentage: number;
     referredByPlayerId?: string | null;
@@ -262,9 +277,11 @@ export async function createPlayer(
 
   const playerId = input.playerId.trim();
   const phone = input.phone.trim();
+  const email = input.email?.trim().toLowerCase() || undefined;
+  const userType = input.userType;
   const regularBonusPercentage = input.regularBonusPercentage;
   const firstDepositBonusPercentage = input.firstDepositBonusPercentage;
-  const referralPercentage = input.referralPercentage ?? 1;
+  const referralPercentage = input.referralPercentage ?? 0;
 
   let referredByPlayerId: Types.ObjectId | undefined;
   if (input.referredByPlayerId) {
@@ -272,9 +289,12 @@ export async function createPlayer(
       throw new AppError("validation_error", "Invalid referredByPlayerId", 400);
     }
     referredByPlayerId = new Types.ObjectId(input.referredByPlayerId);
-    const referrer = await PlayerModel.findById(referredByPlayerId).select("_id");
+    const referrer = await PlayerModel.findById(referredByPlayerId).select("_id userType");
     if (!referrer) {
       throw new AppError("not_found", "Referrer player not found", 404);
+    }
+    if (referrer.userType !== "ib") {
+      throw new AppError("validation_error", "Referrer must be an IB player", 400);
     }
   }
 
@@ -283,6 +303,8 @@ export async function createPlayer(
       exchange: new Types.ObjectId(input.exchangeId),
       playerId,
       phone,
+      email,
+      userType,
       regularBonusPercentage,
       firstDepositBonusPercentage,
       referredByPlayerId,
@@ -300,6 +322,8 @@ export async function createPlayer(
         exchangeId: input.exchangeId,
         playerId,
         phone,
+        email,
+        userType,
         regularBonusPercentage,
         firstDepositBonusPercentage,
         referredByPlayerId: referredByPlayerId?.toString(),
@@ -323,7 +347,9 @@ export async function getPlayerById(id: string) {
     throw new AppError("validation_error", "Invalid player id", 400);
   }
   const doc = await PlayerModel.findById(id)
-    .select("exchange playerId phone regularBonusPercentage firstDepositBonusPercentage referredByPlayerId referralPercentage")
+    .select(
+      "exchange playerId phone email userType regularBonusPercentage firstDepositBonusPercentage referredByPlayerId referralPercentage",
+    )
     .populate("exchange", "name provider")
     .populate("referredByPlayerId", "playerId phone exchange")
     .lean();
@@ -332,6 +358,7 @@ export async function getPlayerById(id: string) {
   }
   return {
     ...doc,
+    userType: doc.userType === "ib" ? "ib" : "trader",
     bonusPercentage: doc.regularBonusPercentage,
   };
 }
@@ -340,6 +367,8 @@ export async function updatePlayer(
   id: string,
   input: {
     phone: string;
+    email?: string | null;
+    userType: "trader" | "ib";
     regularBonusPercentage: number;
     firstDepositBonusPercentage: number;
     referredByPlayerId?: string | null;
@@ -358,10 +387,12 @@ export async function updatePlayer(
 
   const oldValue = {
     phone: doc.phone,
+    email: doc.email,
+    userType: doc.userType ?? "trader",
     regularBonusPercentage: doc.regularBonusPercentage,
     firstDepositBonusPercentage: doc.firstDepositBonusPercentage,
     referredByPlayerId: doc.referredByPlayerId?.toString(),
-    referralPercentage: doc.referralPercentage ?? 1,
+    referralPercentage: doc.referralPercentage ?? 0,
   };
 
   let referredByPlayerId: Types.ObjectId | undefined;
@@ -373,17 +404,27 @@ export async function updatePlayer(
       throw new AppError("business_rule_error", "Player cannot refer themselves", 400);
     }
     referredByPlayerId = new Types.ObjectId(input.referredByPlayerId);
-    const referrer = await PlayerModel.findById(referredByPlayerId).select("_id");
+    const referrer = await PlayerModel.findById(referredByPlayerId).select("_id userType");
     if (!referrer) {
       throw new AppError("not_found", "Referrer player not found", 404);
     }
+    if (referrer.userType !== "ib") {
+      throw new AppError("validation_error", "Referrer must be an IB player", 400);
+    }
   }
 
+  const email = input.email?.trim().toLowerCase() || undefined;
   doc.phone = input.phone.trim();
+  if (email) {
+    doc.email = email;
+  } else {
+    doc.set("email", undefined);
+  }
+  doc.userType = input.userType;
   doc.regularBonusPercentage = input.regularBonusPercentage;
   doc.firstDepositBonusPercentage = input.firstDepositBonusPercentage;
   doc.referredByPlayerId = referredByPlayerId;
-  doc.referralPercentage = input.referralPercentage ?? 1;
+  doc.referralPercentage = input.referralPercentage ?? 0;
   doc.updatedBy = new Types.ObjectId(actorId);
   await doc.save();
 
@@ -395,10 +436,12 @@ export async function updatePlayer(
     oldValue,
     newValue: {
       phone: doc.phone,
+      email: doc.email,
+      userType: doc.userType,
       regularBonusPercentage: doc.regularBonusPercentage,
       firstDepositBonusPercentage: doc.firstDepositBonusPercentage,
       referredByPlayerId: doc.referredByPlayerId?.toString(),
-      referralPercentage: doc.referralPercentage ?? 1,
+      referralPercentage: doc.referralPercentage ?? 0,
     },
     requestId,
   });
@@ -444,6 +487,7 @@ export async function listPlayers(query: ListPlayerQuery, options?: { timeZone?:
 
   const normalizedRows = rows.map((row) => ({
     ...row,
+    userType: row.userType === "ib" ? "ib" : "trader",
     bonusPercentage:
       typeof row.regularBonusPercentage === "number"
         ? row.regularBonusPercentage
@@ -505,9 +549,11 @@ export async function exportPlayersToBuffer(
       Provider: ex?.provider ?? "",
       "Player Id": r.playerId,
       Phone: r.phone,
+      Email: r.email ?? "",
+      "User Type": r.userType === "ib" ? "IB" : "Trader",
       "Regular Bonus %": r.regularBonusPercentage ?? 0,
       "First Deposit Bonus %": r.firstDepositBonusPercentage ?? 0,
-      "Referral %": r.referralPercentage ?? 1,
+      "Referral %": r.referralPercentage ?? 0,
       "Referred By Player": (() => {
         const referredBy = r.referredByPlayerId as { playerId?: string; phone?: string } | null | undefined;
         if (!referredBy?.playerId) return "";
@@ -523,8 +569,8 @@ export async function exportPlayersToBuffer(
 
 export function getSampleCsvBuffer(): Buffer {
   const header =
-    "exchange_name,player_id,phone,bonus_percentage,first_deposit_bonus_percentage,old_player\n";
-  const example = "Example Exchange,PLAYER001,9876543210,5,10,no\n";
+    "exchange_name,player_id,phone,user_type,bonus_percentage,first_deposit_bonus_percentage,old_player\n";
+  const example = "Example Exchange,PLAYER001,9876543210,trader,5,10,no\n";
   return Buffer.from(header + example, "utf-8");
 }
 
@@ -558,6 +604,7 @@ export type ImportErrorRowData = {
   exchange_name: string;
   player_id: string;
   phone: string;
+  user_type: string;
   bonus_percentage: string;
   first_deposit_bonus_percentage: string;
   old_player: string;
@@ -589,6 +636,7 @@ export function buildPlayerImportErrorCsvBuffer(errors: ImportRowError[]): Buffe
     "exchange_name",
     "player_id",
     "phone",
+    "user_type",
     "bonus_percentage",
     "first_deposit_bonus_percentage",
     "old_player",
@@ -602,6 +650,7 @@ export function buildPlayerImportErrorCsvBuffer(errors: ImportRowError[]): Buffe
         quoteCsvValue(error.rowData.exchange_name),
         quoteCsvValue(error.rowData.player_id),
         quoteCsvValue(error.rowData.phone),
+        quoteCsvValue(error.rowData.user_type),
         quoteCsvValue(error.rowData.bonus_percentage),
         quoteCsvValue(error.rowData.first_deposit_bonus_percentage),
         quoteCsvValue(error.rowData.old_player),
@@ -657,6 +706,20 @@ function parseMigratedOldUserCell(
   };
 }
 
+function parseUserTypeCell(
+  raw: string,
+  rowNum: number,
+  rowData: ImportErrorRowData,
+): { ok: true; value: "trader" | "ib" } | { ok: false; error: ImportRowError } {
+  const t = raw.trim().toLowerCase();
+  if (t === "" || t === "trader") return { ok: true, value: "trader" };
+  if (t === "ib") return { ok: true, value: "ib" };
+  return {
+    ok: false,
+    error: buildImportError(rowNum, "user_type must be trader or ib (or blank for trader)", rowData),
+  };
+}
+
 function sheetRowsToObjects(sheet: xlsx.WorkSheet): Record<string, unknown>[] {
   return xlsx.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: false });
 }
@@ -667,6 +730,7 @@ type ParsedImportRow = {
   exchangeId: Types.ObjectId;
   playerId: string;
   phone: string;
+  userType: "trader" | "ib";
   regularBonusPercentage: number;
   firstDepositBonusPercentage: number;
   isMigratedOldUser?: boolean;
@@ -757,6 +821,7 @@ export async function parsePlayerImportFile(
     exchangeName: string;
     playerId: string;
     phone: string;
+    userTypeRaw: string;
     regularBonusRaw: string;
     firstDepositBonusRaw: string;
     isMigratedOldUserRaw: string;
@@ -769,6 +834,7 @@ export async function parsePlayerImportFile(
     const exchangeName = pickCell(row, "exchange_name", "exchange", "exchange name");
     const playerId = pickCell(row, "player_id", "playerid", "player id");
     const phone = pickCell(row, "phone", "phone_number", "phone number", "mobile");
+    const userTypeRaw = pickCellRaw(row, "user_type", "userType", "user type", "type");
     const regularBonusRaw = pickCellRaw(
       row,
       "bonus_percentage",
@@ -793,6 +859,7 @@ export async function parsePlayerImportFile(
       exchange_name: exchangeName,
       player_id: playerId,
       phone,
+      user_type: userTypeRaw,
       bonus_percentage: regularBonusRaw,
       first_deposit_bonus_percentage: firstDepositBonusRaw,
       old_player: isMigratedOldUserRaw,
@@ -822,6 +889,7 @@ export async function parsePlayerImportFile(
       exchangeName,
       playerId,
       phone,
+      userTypeRaw,
       regularBonusRaw,
       firstDepositBonusRaw,
       isMigratedOldUserRaw,
@@ -869,6 +937,11 @@ export async function parsePlayerImportFile(
       errors.push(firstDepositBonusParsed.error);
       continue;
     }
+    const userTypeParsed = parseUserTypeCell(row.userTypeRaw, row.rowNum, row.rowData);
+    if (!userTypeParsed.ok) {
+      errors.push(userTypeParsed.error);
+      continue;
+    }
     const migratedOldUserParsed = parseMigratedOldUserCell(row.isMigratedOldUserRaw, row.rowNum, row.rowData);
     if (!migratedOldUserParsed.ok) {
       errors.push(migratedOldUserParsed.error);
@@ -881,6 +954,7 @@ export async function parsePlayerImportFile(
       exchangeId,
       playerId: row.playerId,
       phone: row.phone,
+      userType: userTypeParsed.value,
       regularBonusPercentage: regularBonusParsed.value,
       firstDepositBonusPercentage: firstDepositBonusParsed.value,
       isMigratedOldUser: migratedOldUserParsed.value,
@@ -900,6 +974,7 @@ export async function parsePlayerImportFile(
           exchange_name: p.exchangeName,
           player_id: p.playerId,
           phone: p.phone,
+          user_type: p.userType,
           bonus_percentage: String(p.regularBonusPercentage),
           first_deposit_bonus_percentage: String(p.firstDepositBonusPercentage),
           old_player: p.isMigratedOldUser ? "yes" : "no",
@@ -964,6 +1039,7 @@ export async function applyPlayerImportRows(
         exchange: p.exchangeId,
         playerId: p.playerId,
         phone: p.phone,
+        userType: p.userType,
         regularBonusPercentage: p.regularBonusPercentage,
         firstDepositBonusPercentage: p.firstDepositBonusPercentage,
         isMigratedOldUser: p.isMigratedOldUser ?? false,
@@ -982,6 +1058,7 @@ export async function applyPlayerImportRows(
             update: {
               $set: {
                 phone: p.phone,
+                userType: p.userType,
                 regularBonusPercentage: p.regularBonusPercentage,
                 firstDepositBonusPercentage: p.firstDepositBonusPercentage,
                 ...(typeof p.isMigratedOldUser === "boolean" ? { isMigratedOldUser: p.isMigratedOldUser } : {}),

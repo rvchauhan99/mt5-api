@@ -8,6 +8,7 @@ import { WithdrawalModel } from "../withdrawal/withdrawal.model";
 import { ExpenseModel } from "../expense/expense.model";
 import { LiabilityEntryModel } from "../liability/liability-entry.model";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
+import { ReferralAccrualModel } from "../referral/referral-accrual.model";
 import {
   DEFAULT_TIMEZONE,
   formatDateTimeForTimeZone,
@@ -353,7 +354,7 @@ export async function exportBanksToBuffer(
 type LedgerQuery = {
   fromDate?: string;
   toDate?: string;
-  entryType?: "all" | "deposit" | "withdrawal" | "expense" | "liability" | "settlement";
+  entryType?: "all" | "deposit" | "withdrawal" | "expense" | "liability" | "settlement" | "referral";
 };
 
 function settlementEventTime(s: { effectiveAt: Date }): Date {
@@ -375,6 +376,13 @@ function withdrawalEventTime(w: { updatedAt?: Date; createdAt?: Date }): Date {
 function expenseEventTime(e: { approvedAt?: Date; createdAt?: Date }): Date {
   if (e.approvedAt) return new Date(e.approvedAt);
   if (e.createdAt) return new Date(e.createdAt);
+  return new Date(0);
+}
+
+function referralSettleEventTime(r: { settledAt?: Date; updatedAt?: Date; createdAt?: Date }): Date {
+  if (r.settledAt) return new Date(r.settledAt);
+  if (r.updatedAt) return new Date(r.updatedAt);
+  if (r.createdAt) return new Date(r.createdAt);
   return new Date(0);
 }
 
@@ -404,28 +412,34 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
   const toD = to ? ymdToUtcEnd(to, timeZone) : null;
   const entryType = query.entryType || "all";
 
-  const [allDeposits, allWithdrawals, allExpenses, allLiabilityEntries, allSettlements] = await Promise.all([
-    DepositModel.find({ bankId: bid, status: "verified" })
-      .populate("player", "name")
-      .populate("createdBy", "fullName")
-      .lean(),
-    WithdrawalModel.find({ payoutBankId: bid, status: "approved" })
-      .populate("player", "name")
-      .populate("createdBy", "fullName")
-      .lean(),
-    ExpenseModel.find({ bankId: bid, status: "approved" }).lean(),
-    LiabilityEntryModel.find({
-      $or: [
-        { fromAccountType: "bank", fromAccountId: bid },
-        { toAccountType: "bank", toAccountId: bid },
-      ],
-    })
-      .populate("createdBy", "fullName")
-      .lean(),
-    BankBalanceSettlementModel.find({ bankId: bid })
-      .populate("createdBy", "fullName username")
-      .lean(),
-  ]);
+  const [allDeposits, allWithdrawals, allExpenses, allReferralSettles, allLiabilityEntries, allSettlements] =
+    await Promise.all([
+      DepositModel.find({ bankId: bid, status: "verified" })
+        .populate("player", "name")
+        .populate("createdBy", "fullName")
+        .lean(),
+      WithdrawalModel.find({ payoutBankId: bid, status: "approved" })
+        .populate("player", "name")
+        .populate("createdBy", "fullName")
+        .lean(),
+      ExpenseModel.find({ bankId: bid, status: "approved" }).lean(),
+      ReferralAccrualModel.find({
+        bankId: bid,
+        status: "settled",
+        settlementAccountType: "bank",
+      }).lean(),
+      LiabilityEntryModel.find({
+        $or: [
+          { fromAccountType: "bank", fromAccountId: bid },
+          { toAccountType: "bank", toAccountId: bid },
+        ],
+      })
+        .populate("createdBy", "fullName")
+        .lean(),
+      BankBalanceSettlementModel.find({ bankId: bid })
+        .populate("createdBy", "fullName username")
+        .lean(),
+    ]);
 
   const liabilityPersonIds = new Set<string>();
   for (const e of allLiabilityEntries) {
@@ -458,6 +472,11 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
       if (at >= fromD) continue;
       priorNet -= e.amount;
     }
+    for (const r of allReferralSettles) {
+      const at = referralSettleEventTime(r);
+      if (at >= fromD) continue;
+      priorNet -= Number(r.accruedAmount ?? 0);
+    }
     for (const le of allLiabilityEntries) {
       const at = liabilityEventTime(le);
       if (at >= fromD) continue;
@@ -479,6 +498,7 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
     | { kind: "deposit"; t: number; doc: (typeof allDeposits)[0] }
     | { kind: "withdrawal"; t: number; doc: (typeof allWithdrawals)[0] }
     | { kind: "expense"; t: number; doc: (typeof allExpenses)[0] }
+    | { kind: "referral"; t: number; doc: (typeof allReferralSettles)[0] }
     | { kind: "liability"; t: number; doc: (typeof allLiabilityEntries)[0] }
     | { kind: "settlement"; t: number; doc: SettlementLean };
 
@@ -505,6 +525,14 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
     if (toD && at > toD) continue;
     if (entryType === "all" || entryType === "expense") {
       events.push({ kind: "expense", t: at.getTime(), doc: e });
+    }
+  }
+  for (const r of allReferralSettles) {
+    const at = referralSettleEventTime(r);
+    if (fromD && at < fromD) continue;
+    if (toD && at > toD) continue;
+    if (entryType === "all" || entryType === "referral") {
+      events.push({ kind: "referral", t: at.getTime(), doc: r });
     }
   }
   for (const le of allLiabilityEntries) {
@@ -643,6 +671,29 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         createdByName: createdLabel,
         amount: amt,
         direction: signed >= 0 ? ("credit" as const) : ("debit" as const),
+        balanceAfter: running,
+        bonusMemo: undefined,
+      };
+    }
+
+    if (ev.kind === "referral") {
+      const r = ev.doc;
+      const amt = Number(r.accruedAmount ?? 0);
+      const ref = `REF-IB-${String(r._id).slice(-8).toUpperCase()}`;
+      running -= amt;
+      totalDebits += amt;
+      return {
+        kind: "referral" as const,
+        refId: String(r._id),
+        at: formatDateTimeForTimeZone(new Date(ev.t), timeZone),
+        label: r.settlementRemark?.trim()
+          ? `IB referral settle: ${r.settlementRemark.trim()}`
+          : "IB referral settle",
+        utr: ref,
+        playerName: "",
+        createdByName: "",
+        amount: amt,
+        direction: "debit" as const,
         balanceAfter: running,
         bonusMemo: undefined,
       };

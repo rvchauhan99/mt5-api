@@ -491,8 +491,6 @@ export async function validateWithdrawalImportRows(
     const hasPayoutUtr = rd.payoutUtr.trim() !== "";
     const hasPayoutBank = rd.payoutBankIdentifier.trim() !== "";
     const hasPayoutPerson = rd.payoutPersonName.trim() !== "";
-    const hasPayoutSettlement = rd.payoutSettlementType.trim() !== "";
-    const hasAnyPayout = hasPayoutUtr || hasPayoutBank || hasPayoutPerson || hasPayoutSettlement;
     const payoutMode = rd.payoutSettlementType.toLowerCase() === "person" ? "person" : "bank";
 
     let resolvedPayoutBankId: string | undefined;
@@ -501,54 +499,53 @@ export async function validateWithdrawalImportRows(
     let resolvedPayoutPersonName: string | undefined;
     let resolvedPayoutUtr: string | undefined;
 
-    if (hasAnyPayout) {
-      if (!hasPayoutUtr) rowErrors.push("Payout UTR is required when payout details are provided");
-      else if (rd.payoutUtr.length < 4) rowErrors.push("Payout UTR must be at least 4 characters");
-      else if (rd.payoutUtr.length > 120) rowErrors.push("Payout UTR must not exceed 120 characters");
+    // Single-stage: payout details required on every import row.
+    if (!hasPayoutUtr) rowErrors.push("Payout UTR is required");
+    else if (rd.payoutUtr.length < 4) rowErrors.push("Payout UTR must be at least 4 characters");
+    else if (rd.payoutUtr.length > 120) rowErrors.push("Payout UTR must not exceed 120 characters");
+    else {
+      const normalized = normalizeUtr(rd.payoutUtr);
+      if (existingPayoutUtrConflicts.has(normalized)) {
+        rowErrors.push("Payout UTR already exists in another transaction");
+      } else if (seenPayoutUtrs.has(normalized)) {
+        rowErrors.push("Duplicate Payout UTR within this file");
+      } else {
+        seenPayoutUtrs.add(normalized);
+        resolvedPayoutUtr = normalized;
+      }
+    }
+
+    if (payoutMode === "bank") {
+      if (rd.payoutBankNotationError) rowErrors.push(rd.payoutBankNotationError);
+      if (!hasPayoutBank) rowErrors.push("Payout Bank is required for Bank payout settlement");
       else {
-        const normalized = normalizeUtr(rd.payoutUtr);
-        if (existingPayoutUtrConflicts.has(normalized)) {
-          rowErrors.push("Payout UTR already exists in another transaction");
-        } else if (seenPayoutUtrs.has(normalized)) {
-          rowErrors.push("Duplicate Payout UTR within this file");
+        const key = rd.payoutBankIdentifier.trim().toLowerCase();
+        const bankResult = payoutBankResolutionCache.get(key);
+        if (bankResult?.status === "ambiguous") {
+          rowErrors.push(
+            `Multiple banks found with holder name "${rd.payoutBankIdentifier}". Use account number instead.`,
+          );
+        } else if (!bankResult || bankResult.status === "not_found") {
+          rowErrors.push(`Payout bank "${rd.payoutBankIdentifier}" not found (tried account number and holder name)`);
+        } else if (bankResult.status === "inactive") {
+          rowErrors.push(`Payout bank "${bankResult.displayName}" is not active`);
         } else {
-          seenPayoutUtrs.add(normalized);
-          resolvedPayoutUtr = normalized;
+          resolvedPayoutBankId = bankResult.id;
+          resolvedPayoutBankDisplay = bankResult.displayName;
         }
       }
-
-      if (payoutMode === "bank") {
-        if (rd.payoutBankNotationError) rowErrors.push(rd.payoutBankNotationError);
-        if (!hasPayoutBank) rowErrors.push("Payout Bank is required for Bank payout settlement");
-        else {
-          const key = rd.payoutBankIdentifier.trim().toLowerCase();
-          const bankResult = payoutBankResolutionCache.get(key);
-          if (bankResult?.status === "ambiguous") {
-            rowErrors.push(
-              `Multiple banks found with holder name "${rd.payoutBankIdentifier}". Use account number instead.`,
-            );
-          } else if (!bankResult || bankResult.status === "not_found") {
-            rowErrors.push(`Payout bank "${rd.payoutBankIdentifier}" not found (tried account number and holder name)`);
-          } else if (bankResult.status === "inactive") {
-            rowErrors.push(`Payout bank "${bankResult.displayName}" is not active`);
-          } else {
-            resolvedPayoutBankId = bankResult.id;
-            resolvedPayoutBankDisplay = bankResult.displayName;
-          }
-        }
-      } else if (!hasPayoutPerson) {
-        rowErrors.push("Payout Liable Person Name is required for Person payout settlement");
+    } else if (!hasPayoutPerson) {
+      rowErrors.push("Payout Liable Person Name is required for Person payout settlement");
+    } else {
+      const key = rd.payoutPersonName.trim().toLowerCase();
+      const personResult = payoutPersonResolutionCache.get(key);
+      if (!personResult || personResult.status === "not_found") {
+        rowErrors.push(`Payout liability person "${rd.payoutPersonName}" not found`);
+      } else if (personResult.status === "inactive") {
+        rowErrors.push(`Payout liability person "${personResult.name}" is inactive`);
       } else {
-        const key = rd.payoutPersonName.trim().toLowerCase();
-        const personResult = payoutPersonResolutionCache.get(key);
-        if (!personResult || personResult.status === "not_found") {
-          rowErrors.push(`Payout liability person "${rd.payoutPersonName}" not found`);
-        } else if (personResult.status === "inactive") {
-          rowErrors.push(`Payout liability person "${personResult.name}" is inactive`);
-        } else {
-          resolvedPayoutPersonId = personResult.id;
-          resolvedPayoutPersonName = personResult.name;
-        }
+        resolvedPayoutPersonId = personResult.id;
+        resolvedPayoutPersonName = personResult.name;
       }
     }
 
@@ -760,6 +757,8 @@ function buildWithdrawalImportInsertDoc(
       base.payoutLiabilityPersonId = new Types.ObjectId(personIdStr);
       base.payoutLiabilityPersonName = person.name.trim();
     }
+  } else {
+    return { error: "Payout UTR is required" };
   }
 
   return base;
@@ -793,12 +792,13 @@ export async function applyWithdrawalImportRows(
     chunkSize?: number;
     onProgress?: (progress: WithdrawalImportCommitProgress) => Promise<void> | void;
   },
-): Promise<{ created: number; errors: WithdrawalImportCommitError[] }> {
+): Promise<{ created: number; errors: WithdrawalImportCommitError[]; createdIds: string[] }> {
   const actorOid = new Types.ObjectId(actorId);
   const chunkSize = options?.chunkSize ?? WITHDRAWAL_IMPORT_CHUNK_SIZE;
   const totalRows = rows.length;
   let created = 0;
   const errors: WithdrawalImportCommitError[] = [];
+  const createdIds: string[] = [];
   const jobPayoutUtrSet = new Set<string>();
 
   const indexedRows: IndexedWithdrawalImportRow[] = rows.map((row, index) => ({ index, row }));
@@ -814,16 +814,22 @@ export async function applyWithdrawalImportRows(
 
     for (const item of chunk) {
       const payoutUtr = item.row.payoutUtr?.trim();
-      if (payoutUtr) {
-        const normalizedUtr = normalizeUtr(payoutUtr);
-        if (dbConflicts.has(normalizedUtr) || jobPayoutUtrSet.has(normalizedUtr)) {
-          errors.push({
-            row: item.index + 1,
-            utr: payoutUtr,
-            error: "Payout UTR already exists in another transaction",
-          });
-          continue;
-        }
+      if (!payoutUtr) {
+        errors.push({
+          row: item.index + 1,
+          utr: withdrawalImportRowIdentifier(item.row),
+          error: "Payout UTR is required",
+        });
+        continue;
+      }
+      const normalizedUtr = normalizeUtr(payoutUtr);
+      if (dbConflicts.has(normalizedUtr) || jobPayoutUtrSet.has(normalizedUtr)) {
+        errors.push({
+          row: item.index + 1,
+          utr: payoutUtr,
+          error: "Payout UTR already exists in another transaction",
+        });
+        continue;
       }
 
       const built = buildWithdrawalImportInsertDoc(item.row, actorOid, { bankById, personById, playerById });
@@ -836,7 +842,7 @@ export async function applyWithdrawalImportRows(
         continue;
       }
 
-      if (payoutUtr) jobPayoutUtrSet.add(normalizeUtr(payoutUtr));
+      jobPayoutUtrSet.add(normalizedUtr);
       pendingInserts.push({ doc: built, item });
     }
 
@@ -847,10 +853,17 @@ export async function applyWithdrawalImportRows(
           { ordered: false },
         );
         created += inserted.length;
+        for (const doc of inserted) {
+          createdIds.push(String(doc._id));
+        }
       } catch (err: unknown) {
         if (isMongooseBulkWriteError(err)) {
-          const insertedCount = err.insertedDocs?.length ?? err.result?.insertedCount ?? 0;
+          const insertedDocs = (err.insertedDocs ?? []) as Array<{ _id?: Types.ObjectId }>;
+          const insertedCount = insertedDocs.length || err.result?.insertedCount || 0;
           created += insertedCount;
+          for (const doc of insertedDocs) {
+            if (doc?._id) createdIds.push(String(doc._id));
+          }
           for (const we of err.writeErrors ?? []) {
             const pending = pendingInserts[we.index];
             if (!pending) continue;
@@ -882,7 +895,7 @@ export async function applyWithdrawalImportRows(
     }
   }
 
-  return { created, errors };
+  return { created, errors, createdIds };
 }
 
 function scheduleWithdrawalImportSummaryAudit(payload: {
@@ -924,7 +937,11 @@ export async function commitWithdrawalImportRows(
     onProgress: options?.onProgress,
   });
 
-  if (result.created > 0) {
+  // Single-stage import: settle inserted rows that already have payout UTR + bank/person.
+  if (result.createdIds.length > 0) {
+    const { bulkBankerApproveWithdrawals } = await import("./withdrawal.service");
+    await bulkBankerApproveWithdrawals(result.createdIds, actorId, requestId);
+  } else if (result.created > 0) {
     emitApprovalQueueEvent("withdrawal", "banker");
   }
 
@@ -936,7 +953,7 @@ export async function commitWithdrawalImportRows(
     totalRows: rows.length,
   });
 
-  return result;
+  return { created: result.created, errors: result.errors };
 }
 
 const WITHDRAWAL_IMPORT_SAMPLE_COLUMNS = [
@@ -982,10 +999,10 @@ export function getWithdrawalImportSampleRows(): Array<Record<string, string>> {
       IFSC: "ICIC0005678",
       Amount: "3000",
       "Reverse Bonus": "0",
-      "Payout UTR": "",
-      "Payout Settlement Type": "",
+      "Payout UTR": "PAYOUT002DEF",
+      "Payout Settlement Type": "Person",
       "Payout Bank": "",
-      "Payout Liable Person Name": "",
+      "Payout Liable Person Name": "John Doe",
     },
   ];
 }

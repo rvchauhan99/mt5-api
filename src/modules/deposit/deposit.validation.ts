@@ -17,30 +17,43 @@ const depositCoreFieldsSchema = z.object({
   entryAt: optionalDateTime,
 }).merge(moneyFxInputSchema);
 
-export const createDepositBodySchema = depositCoreFieldsSchema
-  .extend({
-    settlementAccountType: z.enum(["bank", "person"]).optional().default("bank"),
-    bankId: z.string().length(24).optional(),
-    liabilityPersonId: z.string().length(24).optional(),
-  })
-  .superRefine((data, ctx) => {
-    const mode = data.settlementAccountType ?? "bank";
-    if (mode === "bank") {
-      if (!data.bankId || data.bankId.trim() === "") {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Bank is required.", path: ["bankId"] });
-      }
-    } else {
-      if (!data.liabilityPersonId || data.liabilityPersonId.trim() === "") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Liability person is required.",
-          path: ["liabilityPersonId"],
-        });
-      }
-    }
-  });
+const depositSettlementFieldsSchema = z.object({
+  settlementAccountType: z.enum(["bank", "person"]).optional().default("bank"),
+  bankId: z.string().length(24).optional(),
+  liabilityPersonId: z.string().length(24).optional(),
+});
 
-export const updateDepositBodySchema = createDepositBodySchema;
+function refineDepositSettlement(
+  data: { settlementAccountType?: "bank" | "person"; bankId?: string; liabilityPersonId?: string },
+  ctx: z.RefinementCtx,
+) {
+  const mode = data.settlementAccountType ?? "bank";
+  if (mode === "bank") {
+    if (!data.bankId || data.bankId.trim() === "") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Bank is required.", path: ["bankId"] });
+    }
+  } else if (!data.liabilityPersonId || data.liabilityPersonId.trim() === "") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Liability person is required.",
+      path: ["liabilityPersonId"],
+    });
+  }
+}
+
+/** Single-stage create: settlement + trader/bonus; service settles to verified. */
+export const createDepositBodySchema = depositCoreFieldsSchema
+  .merge(depositSettlementFieldsSchema)
+  .extend({
+    playerId: z.string().length(24),
+    bonusAmount: z.number().int().min(0),
+  })
+  .superRefine(refineDepositSettlement);
+
+/** Pending-only banker-style update (legacy pending rows). */
+export const updateDepositBodySchema = depositCoreFieldsSchema
+  .merge(depositSettlementFieldsSchema)
+  .superRefine(refineDepositSettlement);
 
 export const listDepositQuerySchema = z.object({
   view: z.enum(["banker", "exchange", "final"]).default("banker"),
@@ -133,8 +146,8 @@ const depositImportRowSchema = z.object({
   settlementAccountType: z.enum(["bank", "person"]).default("bank"),
   bankId: z.string().length(24).optional(),
   liabilityPersonId: z.string().length(24).optional(),
-  playerMongoId: z.string().length(24).optional(),
-  bonusAmount: z.number().min(0).optional(),
+  playerMongoId: z.string().length(24),
+  bonusAmount: z.number().min(0),
   totalAmount: z.number().positive().optional(),
 }).merge(moneyFxInputSchema);
 

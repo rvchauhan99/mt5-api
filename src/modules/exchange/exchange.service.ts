@@ -543,6 +543,7 @@ export async function getExchangeStatement(
       ? DepositModel.find({
           player: { $in: playerIds },
           status: { $in: ["verified", "finalized"] },
+          isReferralSettlement: { $ne: true },
         })
           .select("_id player amount bonusAmount totalAmount utr entryAt settledAt exchangeActionAt updatedAt createdAt")
           .lean()

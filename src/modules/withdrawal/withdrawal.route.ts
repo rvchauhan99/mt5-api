@@ -1,7 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { authMiddleware } from "../../shared/middlewares/auth.middleware";
-import { permissionMiddleware } from "../../shared/middlewares/permission.middleware";
+import { anyPermissionMiddleware, permissionMiddleware } from "../../shared/middlewares/permission.middleware";
 import { requireSuperadminMiddleware } from "../../shared/middlewares/superadmin.middleware";
 import { PERMISSIONS } from "../../shared/constants/permissions";
 import { validate } from "../../shared/middlewares/validate.middleware";
@@ -59,93 +59,95 @@ const upload = multer({
   },
 });
 
+const WITHDRAWAL_ENTRY_PERMISSIONS = [PERMISSIONS.WITHDRAWAL_EXCHANGE, PERMISSIONS.WITHDRAWAL_BANKER] as const;
+
 withdrawalRouter.get(
   "/import/sample",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   sampleWithdrawalCsvController,
 );
 
 withdrawalRouter.post(
   "/import/validate",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   upload.single("file"),
   validateWithdrawalImportController,
 );
 
 withdrawalRouter.post(
   "/import/jobs",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   validate({ body: createWithdrawalImportJobBodySchema }),
   createWithdrawalImportJobController,
 );
 
 withdrawalRouter.get(
   "/import/jobs/:jobId",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   getWithdrawalImportJobController,
 );
 
 withdrawalRouter.get(
   "/import/jobs/:jobId/events",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   streamWithdrawalImportJobEventsController,
 );
 
 withdrawalRouter.get(
   "/import/jobs/:jobId/errors.csv",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   downloadWithdrawalImportJobErrorCsvController,
 );
 
 withdrawalRouter.post(
   "/bulk-banker-approve",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_BANKER),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   validate({ body: bulkBankerApproveBodySchema }),
   bulkBankerApproveController,
 );
 
 withdrawalRouter.post(
   "/bulk-banker-approve/jobs",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_BANKER),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   validate({ body: createBulkBankerApproveJobBodySchema }),
   createBulkBankerApproveJobController,
 );
 
 withdrawalRouter.get(
   "/bulk-banker-approve/jobs/:jobId",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_BANKER),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   getBulkBankerApproveJobController,
 );
 
 withdrawalRouter.get(
   "/bulk-banker-approve/jobs/:jobId/events",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_BANKER),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   streamBulkBankerApproveJobEventsController,
 );
 
 withdrawalRouter.post(
   "/",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   validate({ body: createWithdrawalBodySchema }),
   createWithdrawalController,
 );
 
 withdrawalRouter.get(
   "/player/:playerId/saved-accounts",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   listSavedAccountsController,
 );
 
 withdrawalRouter.patch(
   "/:id",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_EXCHANGE),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   validate({ body: updateWithdrawalBodySchema }),
   updateWithdrawalExchangeController,
 );
 
 withdrawalRouter.patch(
   "/:id/banker-payout",
-  permissionMiddleware(PERMISSIONS.WITHDRAWAL_BANKER),
+  anyPermissionMiddleware([...WITHDRAWAL_ENTRY_PERMISSIONS]),
   validate({ body: withdrawalBankerPayoutBodySchema }),
   updateWithdrawalBankerController,
 );

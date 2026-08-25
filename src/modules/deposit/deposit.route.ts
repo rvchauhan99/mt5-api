@@ -57,61 +57,63 @@ const upload = multer({
   },
 });
 
+const DEPOSIT_ENTRY_PERMISSIONS = [PERMISSIONS.DEPOSIT_EXCHANGE, PERMISSIONS.DEPOSIT_BANKER] as const;
+
 depositRouter.get(
   "/import/sample",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   sampleDepositCsvController,
 );
 
 depositRouter.post(
   "/import/validate",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   upload.single("file"),
   validateDepositImportController,
 );
 
 depositRouter.post(
   "/import/commit",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   validate({ body: commitDepositImportBodySchema }),
   commitDepositImportController,
 );
 
 depositRouter.post(
   "/import/jobs",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   validate({ body: createDepositImportJobBodySchema }),
   createDepositImportJobController,
 );
 
 depositRouter.get(
   "/import/jobs/:jobId",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   getDepositImportJobController,
 );
 
 depositRouter.get(
   "/import/jobs/:jobId/events",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   streamDepositImportJobEventsController,
 );
 
 depositRouter.get(
   "/import/jobs/:jobId/errors.csv",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   downloadDepositImportJobErrorCsvController,
 );
 
 depositRouter.post(
   "/",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   validate({ body: createDepositBodySchema }),
   createDepositController,
 );
 
 depositRouter.put(
   "/:id",
-  permissionMiddleware(PERMISSIONS.DEPOSIT_BANKER),
+  anyPermissionMiddleware([...DEPOSIT_ENTRY_PERMISSIONS]),
   validate({ body: updateDepositBodySchema }),
   updateDepositController,
 );

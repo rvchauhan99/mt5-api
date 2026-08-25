@@ -31,7 +31,12 @@ import {
 } from "../../shared/utils/timezone";
 import type { DepositAmendmentSnapshot, DepositDocument } from "./deposit.model";
 import { DepositModel, DepositStatus } from "./deposit.model";
-import { amendDepositBodySchema, createDepositBodySchema, listDepositQuerySchema } from "./deposit.validation";
+import {
+  amendDepositBodySchema,
+  createDepositBodySchema,
+  listDepositQuerySchema,
+  updateDepositBodySchema,
+} from "./deposit.validation";
 import { emitApprovalQueueEvent } from "../approval/approval-queue-events";
 import {
   cancelReferralAccrualForDeposit,
@@ -55,11 +60,11 @@ export const DEPOSIT_IMPORT_CHUNK_SIZE = 100;
 
 type ListDepositQuery = z.infer<typeof listDepositQuerySchema>;
 type AmendDepositInput = z.infer<typeof amendDepositBodySchema>;
-type BankerDepositCreateInput = z.infer<typeof createDepositBodySchema>;
+type BankerDepositUpdateInput = z.infer<typeof updateDepositBodySchema>;
+type CreateDepositBody = z.infer<typeof createDepositBodySchema>;
 
-type CreateDepositInput = BankerDepositCreateInput & {
+type CreateDepositInput = CreateDepositBody & {
   playerMongoId?: string;
-  bonusAmount?: number;
   totalAmount?: number;
 };
 type DuplicateTransactionContext = {
@@ -204,6 +209,9 @@ function transactionDateCondition(
 
 function buildDepositListFilter(q: ListDepositQuery, timeZone: string): Record<string, unknown> {
   const conditions: Record<string, unknown>[] = [];
+
+  // IB commission settle used to create bonus deposits; never show them in deposit queues.
+  conditions.push({ isReferralSettlement: { $ne: true } });
 
   const search = trimUndef(q.search);
   if (search) {
@@ -413,10 +421,15 @@ export async function createDeposit(input: CreateDepositInput, actorId: string, 
     },
     { minPlatformAmount: getCurrencyMinUnit(platformCurrency) },
   );
-  const playerFields = await resolveImportPlayerFields({
-    ...input,
-    amount: money.amount,
-  });
+
+  const playerId = (input.playerId || input.playerMongoId || "").trim();
+  if (!playerId || !Types.ObjectId.isValid(playerId)) {
+    throw new AppError("validation_error", "Player is required", 400);
+  }
+  const bonusAmount = Number(input.bonusAmount ?? 0);
+  if (!Number.isFinite(bonusAmount) || bonusAmount < 0) {
+    throw new AppError("validation_error", "Invalid bonus amount", 400);
+  }
 
   const base = {
     utr: normalizeUtr(input.utr),
@@ -428,16 +441,16 @@ export async function createDeposit(input: CreateDepositInput, actorId: string, 
     entryAt: parseBusinessDateTime(input.entryAt, "entryAt"),
     createdBy: new Types.ObjectId(actorId),
     settlementAccountType: mode as "bank" | "person",
-    ...playerFields,
   };
 
+  let doc;
   if (mode === "bank") {
     const bankIdStr = input.bankId as string;
     const bank = await BankModel.findById(bankIdStr);
     if (!bank) throw new AppError("not_found", "Bank not found", 404);
     if (bank.status !== "active") throw new AppError("business_rule_error", "Bank is not active", 400);
 
-    const doc = await DepositModel.create({
+    doc = await DepositModel.create({
       ...base,
       bankId: new Types.ObjectId(bankIdStr),
       bankName: bankDisplayName(bank),
@@ -458,49 +471,62 @@ export async function createDeposit(input: CreateDepositInput, actorId: string, 
         operatedAmount: money.operatedAmount,
         exchangeRate: money.exchangeRate,
         entryAt: doc.entryAt,
+        playerId,
+        bonusAmount,
       } as unknown as Record<string, unknown>,
       requestId,
     });
-    emitApprovalQueueEvent("deposit", "exchange");
-    return doc;
+  } else {
+    const personId = input.liabilityPersonId as string;
+    const person = await LiabilityPersonModel.findById(personId).lean();
+    if (!person) throw new AppError("not_found", "Liability person not found", 404);
+    if (!person.isActive) throw new AppError("business_rule_error", "Liability person is inactive", 400);
+
+    doc = await DepositModel.create({
+      ...base,
+      liabilityPersonId: new Types.ObjectId(personId),
+      liabilityPersonName: person.name.trim(),
+      bankImpact: false,
+      bankName: "",
+    });
+
+    await createAuditLog({
+      actorId,
+      action: "deposit.create",
+      entity: "deposit",
+      entityId: doc._id.toString(),
+      newValue: {
+        settlementAccountType: "person",
+        liabilityPersonId: personId,
+        liabilityPersonName: doc.liabilityPersonName,
+        utr: base.utr,
+        amount: money.amount,
+        operatedCurrency: money.operatedCurrency,
+        operatedAmount: money.operatedAmount,
+        exchangeRate: money.exchangeRate,
+        entryAt: doc.entryAt,
+        playerId,
+        bonusAmount,
+      } as unknown as Record<string, unknown>,
+      requestId,
+    });
   }
 
-  const personId = input.liabilityPersonId as string;
-  const person = await LiabilityPersonModel.findById(personId).lean();
-  if (!person) throw new AppError("not_found", "Liability person not found", 404);
-  if (!person.isActive) throw new AppError("business_rule_error", "Liability person is inactive", 400);
-
-  const doc = await DepositModel.create({
-    ...base,
-    liabilityPersonId: new Types.ObjectId(personId),
-    liabilityPersonName: person.name.trim(),
-    bankImpact: false,
-    bankName: "",
-  });
-
-  await createAuditLog({
-    actorId,
-    action: "deposit.create",
-    entity: "deposit",
-    entityId: doc._id.toString(),
-    newValue: {
-      settlementAccountType: "person",
-      liabilityPersonId: personId,
-      liabilityPersonName: doc.liabilityPersonName,
-      utr: base.utr,
-      amount: money.amount,
-      operatedCurrency: money.operatedCurrency,
-      operatedAmount: money.operatedAmount,
-      exchangeRate: money.exchangeRate,
-      entryAt: doc.entryAt,
-    } as unknown as Record<string, unknown>,
-    requestId,
-  });
-  emitApprovalQueueEvent("deposit", "exchange");
-  return doc;
+  // Single-stage: settle immediately to verified (bank/liability + referral side effects).
+  try {
+    return await exchangeApproveDeposit(
+      doc._id.toString(),
+      { playerId, bonusAmount: Math.round(bonusAmount) },
+      actorId,
+      requestId,
+    );
+  } catch (err) {
+    await DepositModel.deleteOne({ _id: doc._id }).catch(() => undefined);
+    throw err;
+  }
 }
 
-export async function updateDepositByBanker(id: string, input: BankerDepositCreateInput, actorId: string, requestId?: string) {
+export async function updateDepositByBanker(id: string, input: BankerDepositUpdateInput, actorId: string, requestId?: string) {
   const doc = await DepositModel.findById(id);
   if (!doc) throw new AppError("not_found", "Deposit not found", 404);
   if (doc.status !== "pending") {
@@ -1964,6 +1990,10 @@ export async function validateDepositImportRows(
     const hasBonusRaw = rd.bonusAmountRaw.trim() !== "";
     const hasPlayerIdRaw = rd.playerIdRaw.trim() !== "";
 
+    if (!hasPlayerIdRaw) {
+      rowErrors.push("Player Id is required");
+    }
+
     if (hasBonusRaw && !hasPlayerIdRaw) {
       rowErrors.push("Bonus Amount requires a Player Id");
     }
@@ -2235,12 +2265,13 @@ export async function applyDepositImportRows(
     chunkSize?: number;
     onProgress?: (progress: DepositImportCommitProgress) => Promise<void> | void;
   },
-): Promise<{ created: number; errors: DepositImportCommitError[] }> {
+): Promise<{ created: number; errors: DepositImportCommitError[]; createdIds: string[] }> {
   const actorOid = new Types.ObjectId(actorId);
   const chunkSize = options?.chunkSize ?? DEPOSIT_IMPORT_CHUNK_SIZE;
   const totalRows = rows.length;
   let created = 0;
   const errors: DepositImportCommitError[] = [];
+  const createdIds: string[] = [];
   const jobUtrSet = new Set<string>();
 
   const indexedRows: IndexedDepositImportRow[] = rows.map((row, index) => ({ index, row }));
@@ -2265,6 +2296,11 @@ export async function applyDepositImportRows(
         continue;
       }
 
+      if (!item.row.playerMongoId?.trim()) {
+        errors.push({ row: item.index + 1, utr: item.row.utr, error: "Player is required" });
+        continue;
+      }
+
       const built = buildDepositImportInsertDoc(item.row, actorOid, bankById, personById);
       if ("error" in built && typeof built.error === "string") {
         errors.push({ row: item.index + 1, utr: item.row.utr, error: built.error });
@@ -2282,11 +2318,17 @@ export async function applyDepositImportRows(
           { ordered: false },
         );
         created += inserted.length;
+        for (const doc of inserted) {
+          createdIds.push(String(doc._id));
+        }
       } catch (err: unknown) {
         if (isMongooseBulkWriteError(err)) {
-          const insertedCount =
-            err.insertedDocs?.length ?? err.result?.insertedCount ?? 0;
+          const insertedDocs = (err.insertedDocs ?? []) as Array<{ _id?: Types.ObjectId }>;
+          const insertedCount = insertedDocs.length || err.result?.insertedCount || 0;
           created += insertedCount;
+          for (const doc of insertedDocs) {
+            if (doc?._id) createdIds.push(String(doc._id));
+          }
           for (const we of err.writeErrors ?? []) {
             const pending = pendingInserts[we.index];
             if (!pending) continue;
@@ -2321,7 +2363,7 @@ export async function applyDepositImportRows(
     }
   }
 
-  return { created, errors };
+  return { created, errors, createdIds };
 }
 
 function scheduleDepositImportSummaryAudit(
@@ -2365,7 +2407,10 @@ export async function commitDepositImportRows(
     onProgress: options?.onProgress,
   });
 
-  if (result.created > 0) {
+  // Single-stage import: settle inserted rows that already have player/bonus to verified.
+  if (result.createdIds.length > 0) {
+    await bulkExchangeApproveDeposits(result.createdIds, actorId, requestId);
+  } else if (result.created > 0) {
     emitApprovalQueueEvent("deposit", "exchange");
   }
 
@@ -2377,7 +2422,7 @@ export async function commitDepositImportRows(
     totalRows: rows.length,
   });
 
-  return result;
+  return { created: result.created, errors: result.errors };
 }
 
 export type DepositImportCommitProgress = {
@@ -2419,8 +2464,8 @@ export function getDepositImportSampleRows(): Array<Record<string, string>> {
       "Settlement Type": "",
       Bank: "Rajesh Kumar",
       "Liable Person Name": "",
-      "Player Id": "",
-      "Bonus Amount": "",
+      "Player Id": "PLAYER002",
+      "Bonus Amount": "0",
       UTR: "TXN002DEF",
       Amount: "3000",
     },
@@ -2429,8 +2474,8 @@ export function getDepositImportSampleRows(): Array<Record<string, string>> {
       "Settlement Type": "Person",
       Bank: "",
       "Liable Person Name": "John Doe",
-      "Player Id": "",
-      "Bonus Amount": "",
+      "Player Id": "PLAYER003",
+      "Bonus Amount": "100",
       UTR: "TXN003GHI",
       Amount: "2500",
     },

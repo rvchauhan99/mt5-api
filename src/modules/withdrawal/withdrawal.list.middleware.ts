@@ -8,16 +8,17 @@ import { hasJwtPermission } from "../../shared/middlewares/permissionAccess";
  */
 export function withdrawalListPermissionMiddleware(req: Request, _res: Response, next: NextFunction) {
   const view = String(req.query.view ?? "exchange");
-  const map: Record<string, string> = {
-    exchange: PERMISSIONS.WITHDRAWAL_EXCHANGE,
-    banker: PERMISSIONS.WITHDRAWAL_BANKER,
+  const map: Record<string, string | string[]> = {
+    exchange: [PERMISSIONS.WITHDRAWAL_EXCHANGE, PERMISSIONS.WITHDRAWAL_BANKER],
+    banker: [PERMISSIONS.WITHDRAWAL_BANKER, PERMISSIONS.WITHDRAWAL_EXCHANGE],
     final: PERMISSIONS.WITHDRAWAL_FINAL_VIEW,
   };
   const required = map[view];
   if (!required) {
     return next(new AppError("validation_error", "Invalid view", 400));
   }
-  if (!hasJwtPermission(req, required)) {
+  const allowed = Array.isArray(required) ? required : [required];
+  if (!allowed.some((p) => hasJwtPermission(req, p))) {
     return next(new AppError("auth_error", "Forbidden", 403));
   }
   next();

@@ -10,38 +10,52 @@ const optionalDateTime = z.preprocess(
   z.string().datetime({ offset: true }).optional(),
 );
 
-export const createWithdrawalBodySchema = z.object({
-  playerId: z.string().length(24),
-  accountNumber: z.string().min(1).max(40).trim(),
-  accountHolderName: z.string().min(1).max(120).trim(),
-  bankName: z.string().min(1).max(120).trim(),
-  ifsc: z.string().min(4).max(20).trim(),
-  amount: z.number().positive(),
-  reverseBonus: z.number().min(0).optional().default(0),
-  requestedAt: optionalDateTime,
-}).merge(moneyFxInputSchema);
-
-export const withdrawalBankerPayoutBodySchema = z
-  .object({
-    payoutSettlementType: z.enum(["bank", "person"]).optional().default("bank"),
-    bankId: z.string().length(24).optional(),
-    liabilityPersonId: z.string().length(24).optional(),
-    utr: z.string().min(4).max(120).trim(),
-  })
-  .superRefine((data, ctx) => {
-    const mode = data.payoutSettlementType ?? "bank";
-    if (mode === "bank") {
-      if (!data.bankId?.trim()) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Payout bank is required.", path: ["bankId"] });
-      }
-    } else if (!data.liabilityPersonId?.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Liability person is required.",
-        path: ["liabilityPersonId"],
-      });
+function refinePayoutSettlement(
+  data: {
+    payoutSettlementType?: "bank" | "person";
+    bankId?: string;
+    liabilityPersonId?: string;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const mode = data.payoutSettlementType ?? "bank";
+  if (mode === "bank") {
+    if (!data.bankId?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Payout bank is required.", path: ["bankId"] });
     }
-  });
+  } else if (!data.liabilityPersonId?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Liability person is required.",
+      path: ["liabilityPersonId"],
+    });
+  }
+}
+
+const payoutFieldsSchema = z.object({
+  payoutSettlementType: z.enum(["bank", "person"]).optional().default("bank"),
+  bankId: z.string().length(24).optional(),
+  liabilityPersonId: z.string().length(24).optional(),
+  utr: z.string().min(4).max(120).trim(),
+});
+
+/** Single-stage create: destination + payout; service settles to approved. */
+export const createWithdrawalBodySchema = z
+  .object({
+    playerId: z.string().length(24),
+    accountNumber: z.string().min(1).max(40).trim(),
+    accountHolderName: z.string().min(1).max(120).trim(),
+    bankName: z.string().min(1).max(120).trim(),
+    ifsc: z.string().min(4).max(20).trim(),
+    amount: z.number().positive(),
+    reverseBonus: z.number().min(0).optional().default(0),
+    requestedAt: optionalDateTime,
+  })
+  .merge(moneyFxInputSchema)
+  .merge(payoutFieldsSchema)
+  .superRefine(refinePayoutSettlement);
+
+export const withdrawalBankerPayoutBodySchema = payoutFieldsSchema.superRefine(refinePayoutSettlement);
 
 export const updateWithdrawalBodySchema = z.object({
   accountNumber: z.string().min(1).max(40).trim(),
@@ -107,20 +121,36 @@ export const amendWithdrawalBodySchema = z.object({
   remark: z.string().max(2000).trim().optional(),
 }).merge(moneyFxInputSchema);
 
-const withdrawalImportRowSchema = z.object({
-  playerMongoId: z.string().length(24),
-  accountNumber: z.string().min(1).max(40),
-  accountHolderName: z.string().min(1).max(120),
-  bankName: z.string().min(1).max(120),
-  ifsc: z.string().min(4).max(20),
-  amount: z.number().positive(),
-  reverseBonus: z.number().min(0).optional().default(0),
-  requestedAt: z.string().optional(),
-  payoutUtr: z.string().min(4).max(120).optional(),
-  payoutSettlementType: z.enum(["bank", "person"]).optional().default("bank"),
-  payoutBankId: z.string().length(24).optional(),
-  payoutLiabilityPersonId: z.string().length(24).optional(),
-}).merge(moneyFxInputSchema);
+const withdrawalImportRowSchema = z
+  .object({
+    playerMongoId: z.string().length(24),
+    accountNumber: z.string().min(1).max(40),
+    accountHolderName: z.string().min(1).max(120),
+    bankName: z.string().min(1).max(120),
+    ifsc: z.string().min(4).max(20),
+    amount: z.number().positive(),
+    reverseBonus: z.number().min(0).optional().default(0),
+    requestedAt: z.string().optional(),
+    payoutUtr: z.string().min(4).max(120),
+    payoutSettlementType: z.enum(["bank", "person"]).optional().default("bank"),
+    payoutBankId: z.string().length(24).optional(),
+    payoutLiabilityPersonId: z.string().length(24).optional(),
+  })
+  .merge(moneyFxInputSchema)
+  .superRefine((data, ctx) => {
+    const mode = data.payoutSettlementType ?? "bank";
+    if (mode === "bank") {
+      if (!data.payoutBankId?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Payout bank is required.", path: ["payoutBankId"] });
+      }
+    } else if (!data.payoutLiabilityPersonId?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Payout liability person is required.",
+        path: ["payoutLiabilityPersonId"],
+      });
+    }
+  });
 
 export const commitWithdrawalImportBodySchema = z.object({
   rows: z.array(withdrawalImportRowSchema).min(1).max(500),

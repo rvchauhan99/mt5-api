@@ -1,6 +1,7 @@
 import { Schema, model, Types } from "mongoose";
 
 export type ReferralAccrualStatus = "accrued" | "settled" | "cancelled";
+export type ReferralSettlementAccountType = "bank" | "person";
 
 export interface ReferralAccrualDocument {
   _id: Types.ObjectId;
@@ -16,6 +17,14 @@ export interface ReferralAccrualDocument {
   settledAt?: Date;
   settledBy?: Types.ObjectId;
   settlementDepositId?: Types.ObjectId;
+  settlementAccountType?: ReferralSettlementAccountType;
+  bankId?: Types.ObjectId;
+  bankName?: string;
+  liabilityPersonId?: Types.ObjectId;
+  liabilityPersonName?: string;
+  liabilityEntryId?: Types.ObjectId;
+  settlementRemark?: string;
+  bankBalanceAfter?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -34,11 +43,20 @@ const referralAccrualSchema = new Schema<ReferralAccrualDocument>(
     settledAt: { type: Date },
     settledBy: { type: Schema.Types.ObjectId, ref: "User" },
     settlementDepositId: { type: Schema.Types.ObjectId, ref: "Deposit" },
+    settlementAccountType: { type: String, enum: ["bank", "person"] },
+    bankId: { type: Schema.Types.ObjectId, ref: "Bank", index: true },
+    bankName: { type: String, trim: true, default: "" },
+    liabilityPersonId: { type: Schema.Types.ObjectId, ref: "LiabilityPerson", index: true },
+    liabilityPersonName: { type: String, trim: true, default: "" },
+    liabilityEntryId: { type: Schema.Types.ObjectId, ref: "LiabilityEntry" },
+    settlementRemark: { type: String, trim: true, maxlength: 1000 },
+    bankBalanceAfter: { type: Number },
   },
   { timestamps: true },
 );
 
 referralAccrualSchema.index({ referrerPlayerId: 1, status: 1, createdAt: -1 });
 referralAccrualSchema.index({ exchangeId: 1, status: 1, createdAt: -1 });
+referralAccrualSchema.index({ bankId: 1, status: 1, settlementAccountType: 1 });
 
 export const ReferralAccrualModel = model<ReferralAccrualDocument>("ReferralAccrual", referralAccrualSchema);

@@ -1,8 +1,8 @@
 import { Schema, model, Types } from "mongoose";
 
-export type LiabilityAccountType = "bank" | "person" | "expense" | "deposit" | "withdrawal";
+export type LiabilityAccountType = "bank" | "person" | "expense" | "deposit" | "withdrawal" | "referral";
 export type LiabilityEntryType = "receipt" | "payment" | "contra" | "journal";
-export type LiabilityEntrySourceType = "expense" | "deposit" | "withdrawal";
+export type LiabilityEntrySourceType = "expense" | "deposit" | "withdrawal" | "referral";
 
 export interface LiabilityEntryDocument {
   _id: Types.ObjectId;
@@ -20,6 +20,7 @@ export interface LiabilityEntryDocument {
   sourceExpenseId?: Types.ObjectId;
   sourceDepositId?: Types.ObjectId;
   sourceWithdrawalId?: Types.ObjectId;
+  sourceReferralAccrualId?: Types.ObjectId;
   referenceNo?: string;
   remark?: string;
   createdBy: Types.ObjectId;
@@ -40,14 +41,23 @@ const liabilityEntrySchema = new Schema<LiabilityEntryDocument>(
     operatedCurrency: { type: String, trim: true },
     operatedAmount: { type: Number, min: 0 },
     exchangeRate: { type: Number, min: 0 },
-    fromAccountType: { type: String, enum: ["bank", "person", "expense", "deposit", "withdrawal"], required: true },
+    fromAccountType: {
+      type: String,
+      enum: ["bank", "person", "expense", "deposit", "withdrawal", "referral"],
+      required: true,
+    },
     fromAccountId: { type: Schema.Types.ObjectId, required: true },
-    toAccountType: { type: String, enum: ["bank", "person", "expense", "deposit", "withdrawal"], required: true },
+    toAccountType: {
+      type: String,
+      enum: ["bank", "person", "expense", "deposit", "withdrawal", "referral"],
+      required: true,
+    },
     toAccountId: { type: Schema.Types.ObjectId, required: true },
-    sourceType: { type: String, enum: ["expense", "deposit", "withdrawal"] },
+    sourceType: { type: String, enum: ["expense", "deposit", "withdrawal", "referral"] },
     sourceExpenseId: { type: Schema.Types.ObjectId, ref: "Expense" },
     sourceDepositId: { type: Schema.Types.ObjectId, ref: "Deposit" },
     sourceWithdrawalId: { type: Schema.Types.ObjectId, ref: "Withdrawal" },
+    sourceReferralAccrualId: { type: Schema.Types.ObjectId, ref: "ReferralAccrual" },
     referenceNo: { type: String, trim: true, default: "" },
     remark: { type: String, trim: true, default: "" },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },

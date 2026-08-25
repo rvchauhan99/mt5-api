@@ -332,6 +332,10 @@ export async function createWithdrawal(
     operatedCurrency?: string;
     operatedAmount?: number;
     exchangeRate?: number;
+    payoutSettlementType?: "bank" | "person";
+    bankId?: string;
+    liabilityPersonId?: string;
+    utr: string;
   },
   actorId: string,
   requestId?: string,
@@ -391,20 +395,29 @@ export async function createWithdrawal(
       exchangeRate: money.exchangeRate,
       payableAmount,
       requestedAt: doc.requestedAt,
+      utr: input.utr,
+      payoutSettlementType: input.payoutSettlementType ?? "bank",
     } as unknown as Record<string, unknown>,
     requestId,
   });
 
-  if (doc.player && Types.ObjectId.isValid(String(doc.player))) {
-    const player = await PlayerModel.findById(doc.player).select("exchange").lean();
-    if (player?.exchange) {
-      await enqueueExchangeRecompute(String(player.exchange));
-      await invalidateCacheDomains(["withdrawal", "exchange", "player"]);
-    }
+  // Single-stage: settle immediately to approved (payout bank/person + UTR side effects).
+  try {
+    return await updateWithdrawalByBanker(
+      doc._id.toString(),
+      {
+        payoutSettlementType: input.payoutSettlementType ?? "bank",
+        bankId: input.bankId,
+        liabilityPersonId: input.liabilityPersonId,
+        utr: input.utr,
+      },
+      actorId,
+      requestId,
+    );
+  } catch (err) {
+    await WithdrawalModel.deleteOne({ _id: doc._id }).catch(() => undefined);
+    throw err;
   }
-
-  emitApprovalQueueEvent("withdrawal", "banker");
-  return doc;
 }
 
 export async function updateWithdrawalByExchange(
@@ -714,7 +727,7 @@ async function lastBankerPayoutBankForActor(
   view: ListWithdrawalQuery["view"],
   actorId: string | undefined,
 ): Promise<LastBankerPayoutMeta> {
-  if (view !== "banker" || !actorId || !Types.ObjectId.isValid(actorId)) return null;
+  if ((view !== "banker" && view !== "exchange") || !actorId || !Types.ObjectId.isValid(actorId)) return null;
 
   const log = await AuditLogModel.findOne({
     actorId: new Types.ObjectId(actorId),
@@ -813,7 +826,7 @@ export async function listWithdrawals(
     page,
     pageSize,
   };
-  if (query.view === "banker") {
+  if (query.view === "banker" || query.view === "exchange") {
     meta.lastBankerPayout = lastBankerPayout;
   }
   const lastRow = rows[rows.length - 1] as { _id?: unknown; requestedAt?: Date; createdAt?: Date } | undefined;

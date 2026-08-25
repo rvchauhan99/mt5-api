@@ -7,6 +7,7 @@ import { BankModel } from "../bank/bank.model";
 import { DepositModel } from "../deposit/deposit.model";
 import { ExpenseModel } from "../expense/expense.model";
 import { WithdrawalModel } from "../withdrawal/withdrawal.model";
+import { ReferralAccrualModel } from "../referral/referral-accrual.model";
 import {
   DEFAULT_TIMEZONE,
   formatDateForTimeZone,
@@ -147,7 +148,7 @@ export async function recomputePersonRollup(personId: string): Promise<void> {
   await person.save();
 }
 
-export type LiabilityEntryAccountLiteral = "bank" | "person" | "expense" | "deposit" | "withdrawal";
+export type LiabilityEntryAccountLiteral = "bank" | "person" | "expense" | "deposit" | "withdrawal" | "referral";
 
 function validateDistinctEndpoints(input: {
   fromAccountType: LiabilityEntryAccountLiteral;
@@ -181,6 +182,11 @@ async function ensureAccountExists(type: LiabilityEntryAccountLiteral, id: strin
   if (type === "withdrawal") {
     const w = await WithdrawalModel.findById(id).select("_id").lean();
     if (!w) throw new AppError("not_found", "Withdrawal not found", 404);
+    return;
+  }
+  if (type === "referral") {
+    const accrual = await ReferralAccrualModel.findById(id).select("_id").lean();
+    if (!accrual) throw new AppError("not_found", "Referral accrual not found", 404);
     return;
   }
   const person = await LiabilityPersonModel.findById(id).lean();
@@ -391,10 +397,11 @@ export async function createLiabilityEntry(
     fromAccountId: string;
     toAccountType: LiabilityEntryAccountLiteral;
     toAccountId: string;
-    sourceType?: "expense" | "deposit" | "withdrawal";
+    sourceType?: "expense" | "deposit" | "withdrawal" | "referral";
     sourceExpenseId?: string;
     sourceDepositId?: string;
     sourceWithdrawalId?: string;
+    sourceReferralAccrualId?: string;
     referenceNo?: string;
     remark?: string;
     operatedCurrency?: string;
@@ -435,6 +442,9 @@ export async function createLiabilityEntry(
     sourceExpenseId: input.sourceExpenseId ? new Types.ObjectId(input.sourceExpenseId) : undefined,
     sourceDepositId: input.sourceDepositId ? new Types.ObjectId(input.sourceDepositId) : undefined,
     sourceWithdrawalId: input.sourceWithdrawalId ? new Types.ObjectId(input.sourceWithdrawalId) : undefined,
+    sourceReferralAccrualId: input.sourceReferralAccrualId
+      ? new Types.ObjectId(input.sourceReferralAccrualId)
+      : undefined,
     referenceNo: input.referenceNo?.trim() ?? "",
     remark: input.remark?.trim() ?? "",
     createdBy: new Types.ObjectId(actorId),
@@ -571,12 +581,13 @@ export async function listLiabilityEntries(
   const objectIds = [...accountIds]
     .filter((id) => Types.ObjectId.isValid(id))
     .map((id) => new Types.ObjectId(id));
-  const [banks, persons, expenses, deposits, withdrawals] = await Promise.all([
+  const [banks, persons, expenses, deposits, withdrawals, referrals] = await Promise.all([
     BankModel.find({ _id: { $in: objectIds } }).select("_id holderName bankName accountNumber").lean(),
     LiabilityPersonModel.find({ _id: { $in: objectIds } }).select("_id name").lean(),
     ExpenseModel.find({ _id: { $in: objectIds } }).select("_id description").lean(),
     DepositModel.find({ _id: { $in: objectIds } }).select("_id utr").lean(),
     WithdrawalModel.find({ _id: { $in: objectIds } }).select("_id utr payableAmount").lean(),
+    ReferralAccrualModel.find({ _id: { $in: objectIds } }).select("_id accruedAmount").lean(),
   ]);
   const bankMap = new Map(
     banks.map((b) => [
@@ -597,6 +608,9 @@ export async function listLiabilityEntries(
     ]),
   );
   const withdrawalMap = new Map(withdrawals.map((w) => [String(w._id), `Withdrawal ${String(w._id).slice(-8)}`]));
+  const referralMap = new Map(
+    referrals.map((r) => [String(r._id), `IB referral settle ${String(r._id).slice(-6)}`]),
+  );
 
   const resolveAcctName = (
     t: LiabilityEntryDocument["fromAccountType"],
@@ -607,6 +621,7 @@ export async function listLiabilityEntries(
     if (t === "expense") return expenseMap.get(idStr) ?? idStr;
     if (t === "deposit") return depositMap.get(idStr) ?? idStr;
     if (t === "withdrawal") return withdrawalMap.get(idStr) ?? idStr;
+    if (t === "referral") return referralMap.get(idStr) ?? `IB referral settle ${idStr.slice(-6)}`;
     return idStr;
   };
 
@@ -675,12 +690,13 @@ export async function getLiabilityPersonLedger(
   const objectIds = [...accountIds]
     .filter((id) => Types.ObjectId.isValid(id))
     .map((id) => new Types.ObjectId(id));
-  const [banks, persons, expenses, depositsList, withdrawalsList] = await Promise.all([
+  const [banks, persons, expenses, depositsList, withdrawalsList, referralsList] = await Promise.all([
     BankModel.find({ _id: { $in: objectIds } }).select("_id holderName bankName accountNumber").lean(),
     LiabilityPersonModel.find({ _id: { $in: objectIds } }).select("_id name").lean(),
     ExpenseModel.find({ _id: { $in: objectIds } }).select("_id description").lean(),
     DepositModel.find({ _id: { $in: objectIds } }).select("_id utr").lean(),
     WithdrawalModel.find({ _id: { $in: objectIds } }).select("_id utr").lean(),
+    ReferralAccrualModel.find({ _id: { $in: objectIds } }).select("_id accruedAmount").lean(),
   ]);
   const bankMap = new Map(
     banks.map((b) => [
@@ -708,6 +724,9 @@ export async function getLiabilityPersonLedger(
         : `Withdrawal ${String(w._id).slice(-8)}`,
     ]),
   );
+  const referralLblMap = new Map(
+    referralsList.map((r) => [String(r._id), `IB referral settle ${String(r._id).slice(-6)}`]),
+  );
 
   const labelForLedger = (
     t: LiabilityEntryDocument["fromAccountType"],
@@ -718,6 +737,7 @@ export async function getLiabilityPersonLedger(
     if (t === "expense") return expenseMap.get(idStr) ?? idStr;
     if (t === "deposit") return depositLblMap.get(idStr) ?? idStr;
     if (t === "withdrawal") return withdrawalLblMap.get(idStr) ?? idStr;
+    if (t === "referral") return referralLblMap.get(idStr) ?? `IB referral settle ${idStr.slice(-6)}`;
     return idStr;
   };
 

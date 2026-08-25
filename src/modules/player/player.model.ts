@@ -5,6 +5,8 @@ export interface PlayerDocument {
   exchange: Types.ObjectId;
   playerId: string;
   phone: string;
+  email?: string;
+  userType: "trader" | "ib";
   isMigratedOldUser: boolean;
   regularBonusPercentage: number;
   firstDepositBonusPercentage: number;
@@ -21,11 +23,19 @@ const playerSchema = new Schema<PlayerDocument>(
     exchange: { type: Schema.Types.ObjectId, required: true, ref: "Exchange" },
     playerId: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
+    email: { type: String, trim: true, lowercase: true, index: true },
+    userType: {
+      type: String,
+      enum: ["trader", "ib"],
+      required: true,
+      default: "trader",
+      index: true,
+    },
     isMigratedOldUser: { type: Boolean, required: true, default: false, index: true },
     regularBonusPercentage: { type: Number, required: true, min: 0, max: 100, default: 0 },
     firstDepositBonusPercentage: { type: Number, required: true, min: 0, max: 100, default: 0 },
     referredByPlayerId: { type: Schema.Types.ObjectId, ref: "Player" },
-    referralPercentage: { type: Number, required: true, min: 0, max: 100, default: 1 },
+    referralPercentage: { type: Number, required: true, min: 0, max: 100, default: 0 },
     createdBy: { type: Schema.Types.ObjectId, required: true, ref: "User" },
     updatedBy: { type: Schema.Types.ObjectId, required: true, ref: "User" },
   },

@@ -32,6 +32,7 @@ export async function computeAllTimeExchangeBalances(
         $match: {
           status: { $in: ["verified", "finalized"] },
           player: { $exists: true, $ne: null },
+          isReferralSettlement: { $ne: true },
         },
       },
       { $lookup: { from: "players", localField: "player", foreignField: "_id", as: "playerDoc" } },

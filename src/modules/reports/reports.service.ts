@@ -10,6 +10,7 @@ import { LiabilityEntryModel } from "../liability/liability-entry.model";
 import { PlayerModel } from "../player/player.model";
 import { UserModel } from "../users/user.model";
 import { ExpenseModel, type ExpenseStatus } from "../expense/expense.model";
+import { ReferralAccrualModel } from "../referral/referral-accrual.model";
 import { AUDIT_ENTITY_AUTH } from "../../shared/constants/auditEntities";
 import {
   DEFAULT_TIMEZONE,
@@ -1028,6 +1029,66 @@ export async function getDashboardSummary(
     ]),
   ]);
 
+  /* ── IB commission (referral accruals by createdAt) ─────────────── */
+  const ibMatch: Record<string, unknown> = {
+    status: { $in: ["accrued", "settled"] },
+    createdAt: {
+      ...(rangeStartUtc ? { $gte: rangeStartUtc } : {}),
+      ...(rangeEndUtc ? { $lte: rangeEndUtc } : {}),
+    },
+    ...(exchangeObjectId ? { exchangeId: exchangeObjectId } : {}),
+  };
+
+  const [ibCommissionAgg, ibTopPerformersRaw] = await Promise.all([
+    ReferralAccrualModel.aggregate<{ _id: string; totalAmount: number; count: number }>([
+      { $match: ibMatch },
+      {
+        $group: {
+          _id: "$status",
+          totalAmount: { $sum: { $ifNull: ["$accruedAmount", 0] } },
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+    ReferralAccrualModel.aggregate<{
+      referrerPlayerId: Types.ObjectId;
+      playerId: string;
+      phone: string;
+      totalAmount: number;
+      count: number;
+    }>([
+      { $match: ibMatch },
+      {
+        $group: {
+          _id: "$referrerPlayerId",
+          totalAmount: { $sum: { $ifNull: ["$accruedAmount", 0] } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { totalAmount: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: "players",
+          localField: "_id",
+          foreignField: "_id",
+          as: "player",
+        },
+      },
+      { $unwind: { path: "$player", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 0,
+          referrerPlayerId: "$_id",
+          playerId: { $ifNull: ["$player.playerId", ""] },
+          phone: { $ifNull: ["$player.phone", ""] },
+          totalAmount: 1,
+          count: 1,
+        },
+      },
+    ]),
+  ]);
+
   /* ── Aggregate deposit KPIs ────────────────────────────────────── */
   let depositTotal = 0, depositCount = 0, depositPendingCount = 0,
     depositPendingAmount = 0, depositVerifiedAmount = 0, depositVerifiedCount = 0,
@@ -1093,9 +1154,31 @@ export async function getDashboardSummary(
     if (row._id === "approved") expenseApprovedAmount += row.totalAmount ?? 0;
   }
 
+  /* ── Aggregate IB commission KPIs ──────────────────────────────── */
+  let ibCommissionTotal = 0;
+  let ibCommissionCount = 0;
+  let ibAccruedAmount = 0;
+  let ibSettledAmount = 0;
+  for (const row of ibCommissionAgg) {
+    const amount = Number(row.totalAmount ?? 0);
+    const count = Number(row.count ?? 0);
+    ibCommissionTotal += amount;
+    ibCommissionCount += count;
+    if (row._id === "accrued") ibAccruedAmount += amount;
+    if (row._id === "settled") ibSettledAmount += amount;
+  }
+
+  const ibTopPerformers = ibTopPerformersRaw.map((row) => ({
+    referrerPlayerId: String(row.referrerPlayerId ?? ""),
+    playerId: String(row.playerId ?? ""),
+    phone: String(row.phone ?? ""),
+    totalAmount: Number(row.totalAmount ?? 0),
+    count: Number(row.count ?? 0),
+  }));
+
   /* ── P&L calculations ──────────────────────────────────────────── */
   const grossPL = depositVerifiedAmount - withdrawalApprovedAmount;
-  const netPL = grossPL - expenseApprovedAmount;
+  const netPL = grossPL - expenseApprovedAmount - ibCommissionTotal;
 
   /* ── Exchange stats ────────────────────────────────────────────── */
   const [exchangeTotal, exchangeActive] = exchangeStats;
@@ -1384,6 +1467,13 @@ export async function getDashboardSummary(
       pendingCount: expensePendingCount,
       approvedAmount: expenseApprovedAmount,
     },
+    ibCommission: {
+      totalAmount: ibCommissionTotal,
+      totalCount: ibCommissionCount,
+      accruedAmount: ibAccruedAmount,
+      settledAmount: ibSettledAmount,
+    },
+    ibTopPerformers,
     pnl: {
       gross: grossPL,
       net: netPL,
@@ -1523,10 +1613,19 @@ export async function exportDashboardSummaryToBuffer(
     { KPI: "Approved Withdrawals", Value: data.withdrawal.approvedAmount },
     { KPI: "Reverse Bonus", Value: data.withdrawal.reverseBonusTotal },
     { KPI: "Total Expenses", Value: data.expense.totalAmount },
+    { KPI: "IB Commission", Value: data.ibCommission.totalAmount },
     { KPI: "Net P&L", Value: data.pnl.net },
     { KPI: "New Players (Selected Period)", Value: data.periodMetrics.newPlayers },
     { KPI: "First-Time Deposit Amount (Selected Period)", Value: data.periodMetrics.firstTimeDepositAmount },
   ];
+
+  const ibTopData = data.ibTopPerformers.map((row, index) => ({
+    Rank: index + 1,
+    "IB Player Id": row.playerId,
+    Phone: row.phone,
+    "Commission Amount": row.totalAmount,
+    Accruals: row.count,
+  }));
 
   const exchangeData = data.exchangesBreakdown.map((ex) => ({
     Exchange: ex.name,
@@ -1553,6 +1652,17 @@ export async function exportDashboardSummaryToBuffer(
       columns: [
         { header: "KPI", key: "KPI" },
         { header: "Value", key: "Value" },
+      ],
+    },
+    {
+      name: "IB Top Performers",
+      data: ibTopData,
+      columns: [
+        { header: "Rank", key: "Rank" },
+        { header: "IB Player Id", key: "IB Player Id" },
+        { header: "Phone", key: "Phone" },
+        { header: "Commission Amount", key: "Commission Amount" },
+        { header: "Accruals", key: "Accruals" },
       ],
     },
     {

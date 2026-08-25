@@ -10,6 +10,7 @@ export type LookupQueryParams = {
   q?: string;
   limit: number;
   id?: string;
+  userType?: "trader" | "ib";
 };
 
 function escapeRegex(input: string): string {
@@ -125,13 +126,16 @@ export async function listExpenseTypeLookupOptions({ q, limit, id }: LookupQuery
   return data;
 }
 
-export async function listPlayerLookupOptions({ q, limit }: LookupQueryParams) {
+export async function listPlayerLookupOptions({ q, limit, userType }: LookupQueryParams) {
   const version = await getCacheVersion("player");
-  const cacheKey = stableLookupKey("player", { q: q ?? "", limit }, version);
+  const cacheKey = stableLookupKey("player", { q: q ?? "", limit, userType: userType ?? "" }, version);
   const cached = await getCachedJson<any[]>(cacheKey);
   if (cached) return cached;
   const qTrim = q?.trim();
   const filter: Record<string, unknown> = {};
+  if (userType === "trader" || userType === "ib") {
+    filter.userType = userType;
+  }
   if (qTrim) {
     const esc = escapeRegex(qTrim);
     filter.$or = [
