@@ -6,6 +6,7 @@ import {
   listBankLookupOptions,
   listExchangeLookupOptions,
   listExpenseTypeLookupOptions,
+  listPaymentMethodLookupOptions,
   listPlayerLookupOptions,
 } from "./lookup.service";
 import { resolveMasterExchangeRate } from "./exchange-rate-lookup.service";
@@ -20,6 +21,13 @@ export async function listBankLookupController(req: Request, res: Response) {
 export async function listExpenseTypeLookupController(req: Request, res: Response) {
   const query = lookupQuerySchema.parse(req.query);
   const data = await listExpenseTypeLookupOptions(query);
+  res.setHeader("Cache-Control", "private, max-age=60");
+  res.status(StatusCodes.OK).json({ success: true, data });
+}
+
+export async function listPaymentMethodLookupController(req: Request, res: Response) {
+  const query = lookupQuerySchema.parse(req.query);
+  const data = await listPaymentMethodLookupOptions(query);
   res.setHeader("Cache-Control", "private, max-age=60");
   res.status(StatusCodes.OK).json({ success: true, data });
 }

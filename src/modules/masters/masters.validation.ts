@@ -68,6 +68,23 @@ export const createExpenseTypeBodySchema = z
 
 export const updateExpenseTypeBodySchema = createExpenseTypeBodySchema.partial().strict();
 
+export const createPaymentMethodBodySchema = z
+  .object({
+    name: z.string().min(1).max(500).trim(),
+    code: z.preprocess(
+      (v) => (v === "" || v === null || v === undefined ? undefined : v),
+      z.string().max(100).trim().optional(),
+    ),
+    description: z.preprocess(
+      (v) => (v === "" || v === null || v === undefined ? undefined : v),
+      z.string().max(10000).trim().optional(),
+    ),
+    isActive: z.boolean().optional(),
+  })
+  .strict();
+
+export const updatePaymentMethodBodySchema = createPaymentMethodBodySchema.partial().strict();
+
 const currencyEnum = z.enum(SUPPORTED_CURRENCIES);
 
 export const createExchangeRateBodySchema = z
@@ -118,6 +135,8 @@ export function parseCreateBody(modelKey: MasterModelKey, body: unknown): Record
       return createExpenseTypeBodySchema.parse(body) as Record<string, unknown>;
     case "exchangeRate":
       return createExchangeRateBodySchema.parse(body) as Record<string, unknown>;
+    case "paymentMethod":
+      return createPaymentMethodBodySchema.parse(body) as Record<string, unknown>;
     default: {
       const _x: never = modelKey;
       return _x;
@@ -133,6 +152,8 @@ export function parseUpdateBody(modelKey: MasterModelKey, body: unknown): Record
       return updateExpenseTypeBodySchema.parse(body) as Record<string, unknown>;
     case "exchangeRate":
       return updateExchangeRateBodySchema.parse(body) as Record<string, unknown>;
+    case "paymentMethod":
+      return updatePaymentMethodBodySchema.parse(body) as Record<string, unknown>;
     default: {
       const _x: never = modelKey;
       return _x;

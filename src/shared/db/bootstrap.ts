@@ -1,10 +1,12 @@
 import bcrypt from "bcrypt";
 import { Types } from "mongoose";
 import { ReasonModel } from "../../modules/masters/reason.model";
+import { PaymentMethodModel } from "../../modules/masters/payment-method.model";
 import { PermissionModel } from "../../modules/permissions/permission.model";
 import { UserModel } from "../../modules/users/user.model";
 import { PERMISSIONS } from "../constants/permissions";
 import { REASON_TYPES } from "../constants/reasonTypes";
+import { BANK_METHOD_LABELS, BANK_METHODS } from "../../modules/bank/bank.constants";
 
 export async function bootstrapData() {
   const entries = Object.values(PERMISSIONS).map((key) => {
@@ -196,6 +198,26 @@ export async function bootstrapData() {
         $setOnInsert: {
           reasonType: row.reasonType,
           reason: row.reason,
+          createdBy: actorId,
+        },
+      },
+      { upsert: true },
+    );
+  }
+
+  for (const code of BANK_METHODS) {
+    const name = BANK_METHOD_LABELS[code];
+    await PaymentMethodModel.updateOne(
+      { code },
+      {
+        $set: {
+          isActive: true,
+          deletedAt: null,
+          updatedBy: actorId,
+          name,
+        },
+        $setOnInsert: {
+          code,
           createdBy: actorId,
         },
       },

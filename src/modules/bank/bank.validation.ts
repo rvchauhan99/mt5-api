@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { openingMoneyFxInputSchema } from "../../shared/validation/moneyFx.validation";
-import { BANK_METHODS } from "./bank.constants";
 
 const optionalTrimmedName = z.preprocess(
   (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
@@ -9,7 +8,7 @@ const optionalTrimmedName = z.preprocess(
 
 export const createBankBodySchema = z
   .object({
-    method: z.enum(BANK_METHODS).optional(),
+    method: z.string().trim().min(1).max(100).optional(),
     name: optionalTrimmedName,
     holderName: z.string().min(2).optional(),
     bankName: z.string().min(2).optional(),

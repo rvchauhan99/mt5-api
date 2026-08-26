@@ -3,7 +3,7 @@ import { AppError } from "../../shared/errors/AppError";
 import { PERMISSIONS } from "../../shared/constants/permissions";
 import { hasJwtPermission } from "../../shared/middlewares/permissionAccess";
 
-type LookupResource = "banks" | "expenseTypes" | "players" | "exchanges";
+type LookupResource = "banks" | "expenseTypes" | "paymentMethods" | "players" | "exchanges";
 
 const LOOKUP_PERMISSION_MAP: Record<LookupResource, string[]> = {
   banks: [
@@ -16,6 +16,7 @@ const LOOKUP_PERMISSION_MAP: Record<LookupResource, string[]> = {
     PERMISSIONS.LIABILITY_ENTRY_LIST,
   ],
   expenseTypes: [PERMISSIONS.EXPENSE_ADD, PERMISSIONS.EXPENSE_AUDIT],
+  paymentMethods: [PERMISSIONS.BANK_ADD, PERMISSIONS.BANK_LIST],
   players: [
     PERMISSIONS.PLAYER_ADD,
     PERMISSIONS.PLAYER_EDIT,

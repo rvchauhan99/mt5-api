@@ -22,7 +22,8 @@ import { computeClosingBalanceActualByBankIds } from "./bankClosingBalance";
 import { listBankQuerySchema } from "./bank.validation";
 import { resolveOpeningMoneyFromRequest } from "../../shared/utils/moneyFx";
 import { invalidateCacheDomains } from "../../shared/cache/domainCache";
-import { BANK_METHOD_LABELS, bankDisplayName, isBankMethod, type BankMethod } from "./bank.constants";
+import { bankDisplayName, bankMethodLabel, toMethodCode } from "./bank.constants";
+import { PaymentMethodModel } from "../masters/payment-method.model";
 
 type ListBankQuery = z.infer<typeof listBankQuerySchema>;
 
@@ -167,7 +168,7 @@ function buildBankListFilter(q: ListBankQuery, timeZone: string): Record<string,
   }
 
   const method = trimUndef(q.method);
-  if (method && isBankMethod(method)) {
+  if (method) {
     conditions.push({ method });
   }
 
@@ -246,13 +247,52 @@ function formatCreatedByForExport(createdBy: unknown): string {
   return String(createdBy);
 }
 
-function generateAccountNumber(method: BankMethod): string {
-  const prefix = method.replace(/_/g, "").toUpperCase().slice(0, 10);
+function generateAccountNumber(method: string): string {
+  const prefix = method.replace(/_/g, "").toUpperCase().slice(0, 10) || "PAY";
   return `${prefix}-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
 }
 
+async function resolvePaymentMethod(inputMethod?: string): Promise<{ code: string; label: string }> {
+  const raw = String(inputMethod ?? "").trim();
+  if (!raw) {
+    throw new AppError("validation_error", "Payment method is required", 400);
+  }
+
+  const codeCandidate = toMethodCode(raw);
+  const esc = raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const or: Record<string, unknown>[] = [
+    { code: codeCandidate },
+    { code: { $regex: `^${esc}$`, $options: "i" } },
+    { name: { $regex: `^${esc}$`, $options: "i" } },
+  ];
+  if (Types.ObjectId.isValid(raw)) {
+    or.push({ _id: new Types.ObjectId(raw) });
+  }
+
+  const row = await PaymentMethodModel.findOne({
+    isActive: true,
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+    $and: [{ $or: or }],
+  })
+    .select({ name: 1, code: 1 })
+    .lean()
+    .exec();
+
+  if (!row) {
+    throw new AppError(
+      "validation_error",
+      "Unknown or inactive payment method. Add it under Masters → Payment Method first.",
+      400,
+    );
+  }
+
+  const code = String(row.code ?? "").trim() || toMethodCode(String(row.name ?? raw));
+  const label = String(row.name ?? "").trim() || bankMethodLabel(code) || code;
+  return { code, label };
+}
+
 export async function createBank(input: {
-  method?: BankMethod;
+  method?: string;
   name?: string;
   holderName?: string;
   bankName?: string;
@@ -264,8 +304,9 @@ export async function createBank(input: {
   openingOperatedAmount?: number;
   openingExchangeRate?: number;
 }, actorId: string, requestId?: string) {
-  const method: BankMethod = input.method && isBankMethod(input.method) ? input.method : "bank_transfer";
-  const defaultLabel = BANK_METHOD_LABELS[method];
+  const resolved = await resolvePaymentMethod(input.method);
+  const method = resolved.code;
+  const defaultLabel = resolved.label;
   const holderName = (input.name || input.holderName || defaultLabel).trim();
   const bankName = (input.bankName || defaultLabel).trim();
   const accountNumber = (input.accountNumber || generateAccountNumber(method)).trim();

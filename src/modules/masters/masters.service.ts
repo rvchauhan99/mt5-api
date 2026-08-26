@@ -43,6 +43,7 @@ const SERVER_ONLY: Set<string> = new Set([
 function cacheDomainsForModel(modelKey: MasterModelKey): string[] {
   if (modelKey === "expenseType") return ["expenseType"];
   if (modelKey === "exchangeRate") return ["exchangeRate"];
+  if (modelKey === "paymentMethod") return ["paymentMethod"];
   return [];
 }
 

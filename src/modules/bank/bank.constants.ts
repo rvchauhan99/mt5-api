@@ -1,7 +1,8 @@
+/** Known default codes (also seeded into Payment Method master). */
 export const BANK_METHODS = ["crypto", "bank_transfer", "sgpay", "trustpay", "card_entry"] as const;
-export type BankMethod = (typeof BANK_METHODS)[number];
+export type BankMethod = string;
 
-export const BANK_METHOD_LABELS: Record<BankMethod, string> = {
+export const BANK_METHOD_LABELS: Record<(typeof BANK_METHODS)[number], string> = {
   crypto: "Crypto",
   bank_transfer: "Bank Transfer",
   sgpay: "SGPay",
@@ -9,12 +10,28 @@ export const BANK_METHOD_LABELS: Record<BankMethod, string> = {
   card_entry: "Card Entry",
 };
 
-export function isBankMethod(value: unknown): value is BankMethod {
-  return typeof value === "string" && (BANK_METHODS as readonly string[]).includes(value);
+export function humanizeMethodCode(code: string): string {
+  return code
+    .trim()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 export function bankMethodLabel(method: unknown): string | undefined {
-  return isBankMethod(method) ? BANK_METHOD_LABELS[method] : undefined;
+  if (typeof method !== "string" || !method.trim()) return undefined;
+  const key = method.trim() as (typeof BANK_METHODS)[number];
+  if ((BANK_METHODS as readonly string[]).includes(key)) {
+    return BANK_METHOD_LABELS[key];
+  }
+  return humanizeMethodCode(method);
+}
+
+export function toMethodCode(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
 }
 
 export type BankDisplayInput = {
