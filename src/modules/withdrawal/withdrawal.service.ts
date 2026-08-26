@@ -5,6 +5,7 @@ import { REASON_TYPES } from "../../shared/constants/reasonTypes";
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { computeClosingBalanceActualByBankIds } from "../bank/bankClosingBalance";
 import { DepositModel } from "../deposit/deposit.model";
 import { ExpenseModel } from "../expense/expense.model";
@@ -190,8 +191,7 @@ function transactionDateCondition(
 }
 
 function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string }): string {
-  const last4 = b.accountNumber.length >= 4 ? b.accountNumber.slice(-4) : b.accountNumber;
-  return `${b.holderName} - ${b.bankName} - ${last4}`;
+  return formatBankDisplayName(b);
 }
 
 /** Base filters per list view (deposit-style `view` query). */

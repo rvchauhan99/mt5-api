@@ -1,14 +1,29 @@
 import { z } from "zod";
-import { moneyFxInputSchema, openingMoneyFxInputSchema } from "../../shared/validation/moneyFx.validation";
+import { openingMoneyFxInputSchema } from "../../shared/validation/moneyFx.validation";
+import { BANK_METHODS } from "./bank.constants";
 
-export const createBankBodySchema = z.object({
-  holderName: z.string().min(2),
-  bankName: z.string().min(2),
-  accountNumber: z.string().min(6),
-  ifsc: z.string().min(4),
-  openingBalance: z.number().min(0),
-  status: z.enum(["active", "deactive"]).default("active"),
-}).merge(openingMoneyFxInputSchema);
+const optionalTrimmedName = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().trim().min(1).max(120).optional(),
+);
+
+export const createBankBodySchema = z
+  .object({
+    method: z.enum(BANK_METHODS).optional(),
+    name: optionalTrimmedName,
+    holderName: z.string().min(2).optional(),
+    bankName: z.string().min(2).optional(),
+    accountNumber: z.string().min(6).optional(),
+    ifsc: z.string().min(2).optional(),
+    openingBalance: z.number().min(0),
+    status: z.enum(["active", "deactive"]).default("active"),
+  })
+  .merge(openingMoneyFxInputSchema)
+  .superRefine((data, ctx) => {
+    if (!data.method && !(data.holderName && data.bankName && data.accountNumber && data.ifsc)) {
+      ctx.addIssue({ code: "custom", path: ["method"], message: "Payment method is required" });
+    }
+  });
 
 export const listBankQuerySchema = z.object({
   search: z.string().optional(),
@@ -16,9 +31,10 @@ export const listBankQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(500).default(20),
   limit: z.coerce.number().int().positive().max(500).optional(),
   sortBy: z
-    .enum(["createdAt", "holderName", "bankName", "accountNumber", "ifsc", "openingBalance", "status"])
+    .enum(["createdAt", "holderName", "bankName", "accountNumber", "ifsc", "openingBalance", "status", "method"])
     .default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
+  method: z.string().optional(),
   holderName: z.string().optional(),
   holderName_op: z.string().optional(),
   bankName: z.string().optional(),

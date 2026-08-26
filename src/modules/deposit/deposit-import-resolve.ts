@@ -1,4 +1,5 @@
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
 import { PlayerModel } from "../player/player.model";
 
@@ -32,8 +33,7 @@ export type ExchangePlayerImportResolution =
   | { status: "ambiguous" };
 
 function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string }): string {
-  const last4 = b.accountNumber.length >= 4 ? b.accountNumber.slice(-4) : b.accountNumber;
-  return `${b.holderName} - ${b.bankName} - ${last4}`;
+  return formatBankDisplayName(b);
 }
 
 function escapeRegex(value: string): string {

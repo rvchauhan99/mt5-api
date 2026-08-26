@@ -2,6 +2,7 @@ import { Types } from "mongoose";
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { DepositModel } from "../deposit/deposit.model";
 import { createLiabilityEntry, deleteLiabilityEntryForReversal } from "../liability/liability.service";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
@@ -13,8 +14,7 @@ import { invalidateCacheDomains } from "../../shared/cache/domainCache";
 import { DEFAULT_TIMEZONE, formatDateForTimeZone } from "../../shared/utils/timezone";
 
 function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string }): string {
-  const last4 = String(b.accountNumber ?? "").slice(-4);
-  return `${b.holderName} — ${b.bankName}${last4 ? ` (${last4})` : ""}`.trim();
+  return formatBankDisplayName(b);
 }
 function referralAmount(amount: number, percentage: number): number {
   return Math.round((Number(amount) * Number(percentage)) / 100);

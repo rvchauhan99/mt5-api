@@ -1,7 +1,9 @@
 import { Schema, model, Types } from "mongoose";
+import { BANK_METHODS, type BankMethod } from "./bank.constants";
 
 export interface BankDocument {
   _id: Types.ObjectId;
+  method?: BankMethod;
   holderName: string;
   bankName: string;
   accountNumber: string;
@@ -20,6 +22,7 @@ export interface BankDocument {
 
 const bankSchema = new Schema<BankDocument>(
   {
+    method: { type: String, enum: BANK_METHODS, trim: true },
     holderName: { type: String, required: true, trim: true },
     bankName: { type: String, required: true, trim: true },
     accountNumber: { type: String, required: true, trim: true, unique: true },

@@ -5,6 +5,7 @@ import { ExpenseTypeModel } from "../masters/expense-type.model";
 import { Types } from "mongoose";
 import { AppError } from "../../shared/errors/AppError";
 import { getCachedJson, getCacheVersion, setCachedJson } from "../../shared/cache/cache.service";
+import { bankDisplayName } from "../bank/bank.constants";
 
 export type LookupQueryParams = {
   q?: string;
@@ -35,17 +36,18 @@ export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
       { bankName: { $regex: esc, $options: "i" } },
       { accountNumber: { $regex: esc, $options: "i" } },
       { ifsc: { $regex: esc, $options: "i" } },
+      { method: { $regex: esc, $options: "i" } },
     ];
   }
   const rows = await BankModel.find(filter)
     .sort({ holderName: 1, bankName: 1 })
     .limit(limit)
-    .select({ holderName: 1, bankName: 1, accountNumber: 1 })
+    .select({ method: 1, holderName: 1, bankName: 1, accountNumber: 1 })
     .lean()
     .exec();
   const data = rows.map((row) => ({
     id: String(row._id),
-    label: `${row.holderName} - ${row.bankName} (${String(row.accountNumber || "").slice(-4)})`,
+    label: bankDisplayName(row),
     holderName: String(row.holderName ?? ""),
     bankName: String(row.bankName ?? ""),
     accountNumber: String(row.accountNumber ?? ""),
