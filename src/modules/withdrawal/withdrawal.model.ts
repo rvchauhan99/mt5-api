@@ -30,11 +30,15 @@ export interface WithdrawalDocument {
   player?: Types.ObjectId;
   /** Denormalized for list/export */
   playerName: string;
-  /** Beneficiary account (where withdrawal is paid). */
+  /** Beneficiary account (where withdrawal is paid). Optional for crypto payouts. */
   accountNumber?: string;
   accountHolderName?: string;
-  bankName: string;
+  bankName?: string;
   ifsc?: string;
+  /** Crypto destination (used when company payout bank method is crypto). */
+  cryptoWalletAddress?: string;
+  cryptoNetwork?: string;
+  cryptoAsset?: string;
   /** Exchange withdrawal amount (platform currency) */
   amount: number;
   operatedCurrency?: string;
@@ -104,8 +108,11 @@ const withdrawalSchema = new Schema<WithdrawalDocument>(
     playerName: { type: String, required: true, trim: true },
     accountNumber: { type: String, trim: true, default: "" },
     accountHolderName: { type: String, trim: true, default: "" },
-    bankName: { type: String, required: true, trim: true },
+    bankName: { type: String, trim: true, default: "" },
     ifsc: { type: String, trim: true, default: "" },
+    cryptoWalletAddress: { type: String, trim: true, default: "" },
+    cryptoNetwork: { type: String, trim: true, default: "" },
+    cryptoAsset: { type: String, trim: true, default: "" },
     amount: { type: Number, required: true, min: 0 },
     operatedCurrency: { type: String, trim: true },
     operatedAmount: { type: Number, min: 0 },

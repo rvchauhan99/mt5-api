@@ -39,14 +39,27 @@ const payoutFieldsSchema = z.object({
   utr: z.string().min(4).max(120).trim(),
 });
 
+const optionalTrimmed = (max: number) =>
+  z.preprocess(
+    (value) => {
+      if (value === undefined || value === null) return undefined;
+      const trimmed = String(value).trim();
+      return trimmed === "" ? undefined : trimmed;
+    },
+    z.string().max(max).optional(),
+  );
+
 /** Single-stage create: destination + payout; service settles to approved. */
 export const createWithdrawalBodySchema = z
   .object({
     playerId: z.string().length(24),
-    accountNumber: z.string().min(1).max(40).trim(),
-    accountHolderName: z.string().min(1).max(120).trim(),
-    bankName: z.string().min(1).max(120).trim(),
-    ifsc: z.string().min(4).max(20).trim(),
+    accountNumber: optionalTrimmed(40),
+    accountHolderName: optionalTrimmed(120),
+    bankName: optionalTrimmed(120),
+    ifsc: optionalTrimmed(20),
+    cryptoWalletAddress: optionalTrimmed(200),
+    cryptoNetwork: optionalTrimmed(80),
+    cryptoAsset: optionalTrimmed(40),
     amount: z.number().positive(),
     reverseBonus: z.number().min(0).optional().default(0),
     requestedAt: optionalDateTime,
@@ -57,14 +70,19 @@ export const createWithdrawalBodySchema = z
 
 export const withdrawalBankerPayoutBodySchema = payoutFieldsSchema.superRefine(refinePayoutSettlement);
 
-export const updateWithdrawalBodySchema = z.object({
-  accountNumber: z.string().min(1).max(40).trim(),
-  accountHolderName: z.string().min(1).max(120).trim(),
-  bankName: z.string().min(1).max(120).trim(),
-  ifsc: z.string().min(4).max(20).trim(),
-  amount: z.number().positive(),
-  reverseBonus: z.number().min(0).optional().default(0),
-}).merge(moneyFxInputSchema);
+export const updateWithdrawalBodySchema = z
+  .object({
+    accountNumber: optionalTrimmed(40),
+    accountHolderName: optionalTrimmed(120),
+    bankName: optionalTrimmed(120),
+    ifsc: optionalTrimmed(20),
+    cryptoWalletAddress: optionalTrimmed(200),
+    cryptoNetwork: optionalTrimmed(80),
+    cryptoAsset: optionalTrimmed(40),
+    amount: z.number().positive(),
+    reverseBonus: z.number().min(0).optional().default(0),
+  })
+  .merge(moneyFxInputSchema);
 
 export const listWithdrawalQuerySchema = z.object({
   view: z.enum(["exchange", "banker", "final"]).default("exchange"),

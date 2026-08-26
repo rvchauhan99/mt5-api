@@ -25,7 +25,7 @@ function stableLookupKey(prefix: string, payload: Record<string, unknown>, versi
 
 export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
   const version = await getCacheVersion("bank");
-  const cacheKey = stableLookupKey("bank", { q: q ?? "", limit }, version);
+  const cacheKey = stableLookupKey("bank-v2", { q: q ?? "", limit }, version);
   const cached = await getCachedJson<any[]>(cacheKey);
   if (cached) return cached;
   const qTrim = q?.trim();
@@ -49,6 +49,7 @@ export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
   const data = rows.map((row) => ({
     id: String(row._id),
     label: bankDisplayName(row),
+    method: row.method != null ? String(row.method) : undefined,
     holderName: String(row.holderName ?? ""),
     bankName: String(row.bankName ?? ""),
     accountNumber: String(row.accountNumber ?? ""),
