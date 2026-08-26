@@ -207,6 +207,7 @@ export async function bootstrapData() {
 
   for (const code of BANK_METHODS) {
     const name = BANK_METHOD_LABELS[code];
+    const isRestrictedPayoutMethod = code === "card_entry" || code === "sgpay" || code === "trustpay";
     await PaymentMethodModel.updateOne(
       { code },
       {
@@ -219,9 +220,36 @@ export async function bootstrapData() {
         $setOnInsert: {
           code,
           createdBy: actorId,
+          // Defaults only on first insert — do not overwrite admin toggles on restart.
+          isActiveForWithdrawalPayout: !isRestrictedPayoutMethod,
+          isActiveForDeposit: !isRestrictedPayoutMethod,
         },
       },
       { upsert: true },
     );
   }
+
+  // One-time backfill for existing payment methods missing the new flags.
+  await PaymentMethodModel.updateMany(
+    {
+      isActiveForWithdrawalPayout: { $exists: false },
+      code: { $in: ["card_entry", "sgpay", "trustpay"] },
+    },
+    { $set: { isActiveForWithdrawalPayout: false } },
+  );
+  await PaymentMethodModel.updateMany(
+    { isActiveForWithdrawalPayout: { $exists: false } },
+    { $set: { isActiveForWithdrawalPayout: true } },
+  );
+  await PaymentMethodModel.updateMany(
+    {
+      isActiveForDeposit: { $exists: false },
+      code: { $in: ["card_entry", "sgpay", "trustpay"] },
+    },
+    { $set: { isActiveForDeposit: false } },
+  );
+  await PaymentMethodModel.updateMany(
+    { isActiveForDeposit: { $exists: false } },
+    { $set: { isActiveForDeposit: true } },
+  );
 }

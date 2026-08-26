@@ -25,7 +25,7 @@ function stableLookupKey(prefix: string, payload: Record<string, unknown>, versi
 
 export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
   const version = await getCacheVersion("bank");
-  const cacheKey = stableLookupKey("bank-v2", { q: q ?? "", limit }, version);
+  const cacheKey = stableLookupKey("bank-v4", { q: q ?? "", limit }, version);
   const cached = await getCachedJson<any[]>(cacheKey);
   if (cached) return cached;
   const qTrim = q?.trim();
@@ -46,7 +46,32 @@ export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
     .select({ method: 1, holderName: 1, bankName: 1, accountNumber: 1 })
     .lean()
     .exec();
+  const methodCodes = [...new Set(rows.map((row) => toMethodCode(String(row.method ?? ""))).filter(Boolean))];
+  const methodRows = methodCodes.length
+    ? await PaymentMethodModel.find({
+        code: { $in: methodCodes },
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+      })
+        .select({ code: 1, isActive: 1, isActiveForWithdrawalPayout: 1, isActiveForDeposit: 1 })
+        .lean()
+        .exec()
+    : [];
+  const methodConfigByCode = new Map(
+    methodRows.map((row) => [
+      String(row.code ?? "").trim(),
+      {
+        isActive: row.isActive !== false,
+        isActiveForWithdrawalPayout: row.isActiveForWithdrawalPayout !== false,
+        isActiveForDeposit: row.isActiveForDeposit !== false,
+      },
+    ]),
+  );
   const data = rows.map((row) => ({
+    ...(methodConfigByCode.get(toMethodCode(String(row.method ?? ""))) ?? {
+      isActive: true,
+      isActiveForWithdrawalPayout: true,
+      isActiveForDeposit: true,
+    }),
     id: String(row._id),
     label: bankDisplayName(row),
     method: row.method != null ? String(row.method) : undefined,
@@ -135,6 +160,8 @@ type PaymentMethodLookupLean = {
   name?: unknown;
   code?: unknown;
   description?: unknown;
+  isActiveForWithdrawalPayout?: boolean;
+  isActiveForDeposit?: boolean;
 };
 
 function mapPaymentMethodLookupRow(row: PaymentMethodLookupLean) {
@@ -146,6 +173,8 @@ function mapPaymentMethodLookupRow(row: PaymentMethodLookupLean) {
     name,
     code,
     description: row.description != null ? String(row.description) : undefined,
+    isActiveForWithdrawalPayout: row.isActiveForWithdrawalPayout !== false,
+    isActiveForDeposit: row.isActiveForDeposit !== false,
   };
 }
 
@@ -158,7 +187,7 @@ export async function listPaymentMethodLookupOptions({ q, limit, id }: LookupQue
       isActive: true,
       $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
     })
-      .select({ name: 1, code: 1, description: 1 })
+      .select({ name: 1, code: 1, description: 1, isActiveForWithdrawalPayout: 1, isActiveForDeposit: 1 })
       .lean()
       .exec();
     if (!row) return [];
@@ -191,7 +220,7 @@ export async function listPaymentMethodLookupOptions({ q, limit, id }: LookupQue
   const rows = await PaymentMethodModel.find(filter)
     .sort({ name: 1 })
     .limit(limit)
-    .select({ name: 1, code: 1, description: 1 })
+    .select({ name: 1, code: 1, description: 1, isActiveForWithdrawalPayout: 1, isActiveForDeposit: 1 })
     .lean()
     .exec();
   const data = rows.map((row) => mapPaymentMethodLookupRow(row as PaymentMethodLookupLean));
