@@ -20,6 +20,7 @@ export const SUPPORTED_CURRENCIES = [
   "NZD",
   "CHF",
   "ZAR",
+  "KWD",
 ] as const;
 
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
@@ -49,6 +50,7 @@ export const CURRENCY_FRACTION_DIGITS: Record<SupportedCurrency, number> = {
   NZD: 2,
   CHF: 2,
   ZAR: 2,
+  KWD: 3,
 };
 
 /** FX rate snapshot precision (industry-common for CRM / treasury capture). */
