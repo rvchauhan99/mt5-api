@@ -52,6 +52,12 @@ export const listBankQuerySchema = z.object({
   openingBalance_op: z.string().optional(),
 });
 
+export const exportBankQuerySchema = listBankQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
+});
+
 export const bankLedgerQuerySchema = z.object({
   fromDate: z.string().optional(),
   toDate: z.string().optional(),

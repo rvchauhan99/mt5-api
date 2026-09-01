@@ -4,7 +4,7 @@ import { authMiddleware } from "../../shared/middlewares/auth.middleware";
 import { permissionMiddleware } from "../../shared/middlewares/permission.middleware";
 import { validate } from "../../shared/middlewares/validate.middleware";
 import { createExchangeTopupController, exportExchangeTopupController, listExchangeTopupController } from "./exchange-topup.controller";
-import { createExchangeTopupBodySchema, listExchangeTopupQuerySchema } from "./exchange-topup.validation";
+import { createExchangeTopupBodySchema, exportExchangeTopupQuerySchema, listExchangeTopupQuerySchema } from "./exchange-topup.validation";
 
 const exchangeTopupRouter = Router();
 
@@ -27,7 +27,7 @@ exchangeTopupRouter.get(
 exchangeTopupRouter.get(
   "/export",
   permissionMiddleware(PERMISSIONS.EXCHANGE_TOPUP_LIST),
-  validate({ query: listExchangeTopupQuerySchema }),
+  validate({ query: exportExchangeTopupQuerySchema }),
   exportExchangeTopupController,
 );
 

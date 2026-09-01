@@ -75,6 +75,12 @@ export const listLiabilityPersonQuerySchema = z.object({
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 
+export const exportLiabilityPersonQuerySchema = listLiabilityPersonQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
+});
+
 export const createLiabilityEntryBodySchema = z.object({
   entryDate: ymd,
   entryType: z.enum(["receipt", "payment", "contra", "journal"]),
@@ -99,6 +105,12 @@ export const listLiabilityEntryQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional(),
   sortBy: z.enum(["createdAt", "entryDate", "amount", "entryType"]).default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
+});
+
+export const exportLiabilityEntryQuerySchema = listLiabilityEntryQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
 });
 
 export const liabilityLedgerQuerySchema = z.object({

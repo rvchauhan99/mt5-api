@@ -19,13 +19,14 @@ import {
 import { BankModel, type BankDocument } from "./bank.model";
 import { BankBalanceSettlementModel } from "./bank-balance-settlement.model";
 import { computeClosingBalanceActualByBankIds } from "./bankClosingBalance";
-import { listBankQuerySchema } from "./bank.validation";
+import { exportBankQuerySchema, listBankQuerySchema } from "./bank.validation";
 import { resolveOpeningMoneyFromRequest } from "../../shared/utils/moneyFx";
 import { invalidateCacheDomains } from "../../shared/cache/domainCache";
 import { bankDisplayName, bankMethodLabel, toMethodCode } from "./bank.constants";
 import { PaymentMethodModel } from "../masters/payment-method.model";
 
 type ListBankQuery = z.infer<typeof listBankQuerySchema>;
+type ExportBankQuery = z.infer<typeof exportBankQuerySchema>;
 
 function pageSizeFromQuery(q: ListBankQuery): number {
   return q.limit ?? q.pageSize;
@@ -150,7 +151,7 @@ function createdAtCondition(
   return null;
 }
 
-function buildBankListFilter(q: ListBankQuery, timeZone: string): Record<string, unknown> {
+function buildBankListFilter(q: ExportBankQuery, timeZone: string): Record<string, unknown> {
   const conditions: Record<string, unknown>[] = [];
 
   const search = trimUndef(q.search);
@@ -440,7 +441,7 @@ export async function listBanks(query: ListBankQuery, options?: { timeZone?: str
 }
 
 export async function exportBanksToBuffer(
-  query: ListBankQuery,
+  query: ExportBankQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;

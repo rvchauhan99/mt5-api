@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import { createExchangeTopup, exportExchangeTopupsToBuffer, listExchangeTopups } from "./exchange-topup.service";
-import { createExchangeTopupBodySchema, listExchangeTopupQuerySchema } from "./exchange-topup.validation";
+import { createExchangeTopupBodySchema, exportExchangeTopupQuerySchema, listExchangeTopupQuerySchema } from "./exchange-topup.validation";
 import { resolveRequestTimeZone } from "../../shared/utils/requestTimezone";
 
 export async function createExchangeTopupController(req: Request, res: Response) {
@@ -18,7 +18,7 @@ export async function listExchangeTopupController(req: Request, res: Response) {
 }
 
 export async function exportExchangeTopupController(req: Request, res: Response) {
-  const query = listExchangeTopupQuerySchema.parse(req.query);
+  const query = exportExchangeTopupQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportExchangeTopupsToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="exchange-topups-export.xlsx"');

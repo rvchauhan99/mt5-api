@@ -50,6 +50,11 @@ export const expenseAnalysisRecordsQuerySchema = expenseAnalysisFilterQuerySchem
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 
+export const exportExpenseAnalysisQuerySchema = expenseAnalysisRecordsQuerySchema.omit({
+  page: true,
+  pageSize: true,
+});
+
 export const transactionHistoryQuerySchema = z.object({
   fromDate: optionalTrimmed,
   toDate: optionalTrimmed,
@@ -62,6 +67,11 @@ export const transactionHistoryQuerySchema = z.object({
   ),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(500).default(20),
+});
+
+export const exportTransactionHistoryQuerySchema = transactionHistoryQuerySchema.omit({
+  page: true,
+  pageSize: true,
 });
 
 export const dashboardSummaryQuerySchema = z.object({

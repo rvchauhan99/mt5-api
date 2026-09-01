@@ -32,6 +32,7 @@ import {
   createWithdrawalBodySchema,
   createWithdrawalImportJobBodySchema,
   listWithdrawalQuerySchema,
+  exportWithdrawalQuerySchema,
   updateWithdrawalBodySchema,
   updateWithdrawalStatusBodySchema,
   withdrawalBankerPayoutBodySchema,
@@ -82,7 +83,7 @@ export async function deleteWithdrawalController(req: Request, res: Response) {
 }
 
 export async function exportWithdrawalController(req: Request, res: Response) {
-  const query = listWithdrawalQuerySchema.parse(req.query);
+  const query = exportWithdrawalQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportWithdrawalsToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="withdrawals-export.xlsx"');
@@ -179,22 +180,8 @@ export async function validateWithdrawalImportController(req: Request, res: Resp
 
 export async function createWithdrawalImportJobController(req: Request, res: Response) {
   const body = createWithdrawalImportJobBodySchema.parse(req.body);
-  const mappedRows = body.rows.map((row) => ({
-    playerMongoId: row.playerMongoId,
-    accountNumber: row.accountNumber,
-    accountHolderName: row.accountHolderName,
-    bankName: row.bankName,
-    ifsc: row.ifsc,
-    amount: row.amount,
-    reverseBonus: row.reverseBonus ?? 0,
-    requestedAt: row.requestedAt,
-    payoutUtr: row.payoutUtr,
-    payoutSettlementType: row.payoutSettlementType,
-    payoutBankId: row.payoutBankId,
-    payoutLiabilityPersonId: row.payoutLiabilityPersonId,
-  }));
   const result = await createWithdrawalImportJob({
-    rows: mappedRows,
+    rows: body.rows,
     actorId: req.user!.userId,
     requestId: req.requestId,
   });

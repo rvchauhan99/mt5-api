@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import {
   dashboardSummaryQuerySchema,
+  exportExpenseAnalysisQuerySchema,
+  exportTransactionHistoryQuerySchema,
   expenseAnalysisRecordsQuerySchema,
   expenseAnalysisSummaryQuerySchema,
   transactionHistoryQuerySchema,
@@ -45,7 +47,7 @@ export async function transactionHistoryController(req: Request, res: Response) 
 }
 
 export async function exportTransactionHistoryController(req: Request, res: Response) {
-  const query = transactionHistoryQuerySchema.parse(req.query);
+  const query = exportTransactionHistoryQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportTransactionHistoryToBuffer(query, { scope: "transactions", timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="audit-history-export.xlsx"');
@@ -80,7 +82,7 @@ export async function expenseAnalysisRecordsController(req: Request, res: Respon
 }
 
 export async function exportExpenseAnalysisController(req: Request, res: Response) {
-  const query = expenseAnalysisRecordsQuerySchema.parse(req.query);
+  const query = exportExpenseAnalysisQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportExpenseAnalysisToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="expense-analysis-export.xlsx"');

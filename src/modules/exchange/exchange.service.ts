@@ -15,7 +15,7 @@ import {
   ymdToUtcStart,
 } from "../../shared/utils/timezone";
 import { ExchangeModel } from "./exchange.model";
-import { exchangeStatementQuerySchema, listExchangeQuerySchema } from "./exchange.validation";
+import { exchangeStatementQuerySchema, exportExchangeQuerySchema, listExchangeQuerySchema } from "./exchange.validation";
 import { resolveOpeningMoneyFromRequest } from "../../shared/utils/moneyFx";
 
 type CreateExchangeInput = {
@@ -30,6 +30,7 @@ type CreateExchangeInput = {
 };
 
 type ListExchangeQuery = z.infer<typeof listExchangeQuerySchema>;
+type ExportExchangeQuery = z.infer<typeof exportExchangeQuerySchema>;
 type ExchangeStatementQuery = z.infer<typeof exchangeStatementQuerySchema>;
 
 function trimUndef(s: string | undefined): string | undefined {
@@ -151,7 +152,7 @@ function createdAtCondition(
   return null;
 }
 
-function buildExchangeListFilter(q: ListExchangeQuery, timeZone: string): Record<string, unknown> {
+function buildExchangeListFilter(q: ExportExchangeQuery, timeZone: string): Record<string, unknown> {
   const conditions: Record<string, unknown>[] = [];
 
   const search = trimUndef(q.search);
@@ -346,7 +347,7 @@ function formatCreatedByForExport(createdBy: unknown): string {
 }
 
 export async function exportExchangesToBuffer(
-  query: ListExchangeQuery,
+  query: ExportExchangeQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;

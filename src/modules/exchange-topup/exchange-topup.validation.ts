@@ -13,3 +13,8 @@ export const listExchangeTopupQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(500).default(20),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
+
+export const exportExchangeTopupQuerySchema = listExchangeTopupQuerySchema.omit({
+  page: true,
+  pageSize: true,
+});

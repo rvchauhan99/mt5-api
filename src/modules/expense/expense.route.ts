@@ -26,6 +26,7 @@ import {
   createExpenseBodySchema,
   expenseDocumentViewParamsSchema,
   expenseIdParamSchema,
+  exportExpenseQuerySchema,
   listExpenseQuerySchema,
   rejectExpenseBodySchema,
   updateExpenseBodySchema,
@@ -74,7 +75,7 @@ expenseRouter.get(
 expenseRouter.get(
   "/export",
   expenseListPermissionMiddleware,
-  validate({ query: listExpenseQuerySchema }),
+  validate({ query: exportExpenseQuerySchema }),
   exportExpenseController,
 );
 

@@ -14,6 +14,7 @@ import {
   bankLedgerQuerySchema,
   createBankSettlementBodySchema,
   listBankQuerySchema,
+  exportBankQuerySchema,
 } from "./bank.validation";
 import { resolveRequestTimeZone } from "../../shared/utils/requestTimezone";
 
@@ -34,7 +35,7 @@ export async function listBankController(req: Request, res: Response) {
 }
 
 export async function exportBankController(req: Request, res: Response) {
-  const query = listBankQuerySchema.parse(req.query);
+  const query = exportBankQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportBanksToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="banks-export.xlsx"');

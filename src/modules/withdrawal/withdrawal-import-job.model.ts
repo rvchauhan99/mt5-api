@@ -9,6 +9,9 @@ export interface WithdrawalImportJobInputRow {
   bankName: string;
   ifsc: string;
   amount: number;
+  operatedCurrency: string;
+  operatedAmount: number;
+  exchangeRate: number;
   reverseBonus: number;
   requestedAt?: string;
   payoutUtr?: string;
@@ -59,6 +62,9 @@ const rowSchema = new Schema<WithdrawalImportJobInputRow>(
     bankName: { type: String, required: true, trim: true },
     ifsc: { type: String, required: true, trim: true },
     amount: { type: Number, required: true, min: 1 },
+    operatedCurrency: { type: String, required: true, trim: true },
+    operatedAmount: { type: Number, required: true, min: 0 },
+    exchangeRate: { type: Number, required: true, min: 0 },
     reverseBonus: { type: Number, required: true, min: 0, default: 0 },
     requestedAt: { type: String, required: false },
     payoutUtr: { type: String, required: false, trim: true },

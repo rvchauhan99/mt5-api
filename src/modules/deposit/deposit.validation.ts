@@ -98,6 +98,13 @@ export const listDepositQuerySchema = z.object({
   hasAmendment: z.enum(["yes", "no"]).optional(),
 });
 
+export const exportDepositQuerySchema = listDepositQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
+  cursor: true,
+});
+
 export const approvalQueueEventsQuerySchema = z.object({
   view: z.enum(["banker", "exchange"]),
 });

@@ -8,7 +8,7 @@ import {
   listExchanges,
   updateExchange,
 } from "./exchange.service";
-import { exchangeStatementQuerySchema, listExchangeQuerySchema } from "./exchange.validation";
+import { exchangeStatementQuerySchema, exportExchangeQuerySchema, listExchangeQuerySchema } from "./exchange.validation";
 import { resolveRequestTimeZone } from "../../shared/utils/requestTimezone";
 
 export async function createExchangeController(req: Request, res: Response) {
@@ -25,7 +25,7 @@ export async function listExchangeController(req: Request, res: Response) {
 }
 
 export async function exportExchangeController(req: Request, res: Response) {
-  const query = listExchangeQuerySchema.parse(req.query);
+  const query = exportExchangeQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportExchangesToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="exchanges-export.xlsx"');

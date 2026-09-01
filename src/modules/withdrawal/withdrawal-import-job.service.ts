@@ -10,6 +10,7 @@ import {
   commitWithdrawalImportRows,
   WITHDRAWAL_IMPORT_CHUNK_SIZE,
   type WithdrawalImportCommitProgress,
+  type WithdrawalImportCommitRow,
 } from "./withdrawal-import.service";
 import { closeWithdrawalImportEventStream, emitWithdrawalImportEvent } from "./withdrawal-import-events";
 import {
@@ -63,20 +64,7 @@ export type WithdrawalImportJobStatusDto = {
 };
 
 type CreateWithdrawalImportJobInput = {
-  rows: Array<{
-    playerMongoId: string;
-    accountNumber: string;
-    accountHolderName: string;
-    bankName: string;
-    ifsc: string;
-    amount: number;
-    reverseBonus: number;
-    requestedAt?: string;
-    payoutUtr?: string;
-    payoutSettlementType?: "bank" | "person";
-    payoutBankId?: string;
-    payoutLiabilityPersonId?: string;
-  }>;
+  rows: WithdrawalImportCommitRow[];
   actorId: string;
   requestId?: string;
 };

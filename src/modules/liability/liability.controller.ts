@@ -6,6 +6,8 @@ import {
   liabilityLedgerQuerySchema,
   liabilityReportQuerySchema,
   liabilityPersonIdParamSchema,
+  exportLiabilityEntryQuerySchema,
+  exportLiabilityPersonQuerySchema,
   listLiabilityEntryQuerySchema,
   listLiabilityPersonQuerySchema,
   updateLiabilityPersonBodySchema,
@@ -46,7 +48,7 @@ export async function listLiabilityPersonController(req: Request, res: Response)
 }
 
 export async function exportLiabilityPersonController(req: Request, res: Response) {
-  const query = listLiabilityPersonQuerySchema.parse(req.query);
+  const query = exportLiabilityPersonQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportLiabilityPersonsToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="liability-persons-export.xlsx"');
@@ -68,7 +70,7 @@ export async function listLiabilityEntryController(req: Request, res: Response) 
 }
 
 export async function exportLiabilityEntryController(req: Request, res: Response) {
-  const query = listLiabilityEntryQuerySchema.parse(req.query);
+  const query = exportLiabilityEntryQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportLiabilityEntriesToBuffer(query, { timeZone });
   res.setHeader("Content-Disposition", 'attachment; filename="liability-entries-export.xlsx"');

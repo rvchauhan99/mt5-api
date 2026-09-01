@@ -6,7 +6,11 @@ import { ExchangeModel } from "../exchange/exchange.model";
 import { recomputeExchangeCurrentBalance } from "../exchange/exchange.service";
 import { DEFAULT_TIMEZONE, formatDateTimeForTimeZone } from "../../shared/utils/timezone";
 import { ExchangeTopupModel } from "./exchange-topup.model";
+import { exportExchangeTopupQuerySchema } from "./exchange-topup.validation";
 import { resolveMoneyFromRequest } from "../../shared/utils/moneyFx";
+import type { z } from "zod";
+
+type ExportExchangeTopupQuery = z.infer<typeof exportExchangeTopupQuerySchema>;
 import { getCurrencyMinUnit } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 
@@ -114,10 +118,10 @@ export async function listExchangeTopups(query: {
 
 const EXPORT_MAX_ROWS = 10_000;
 
-export async function exportExchangeTopupsToBuffer(query: {
-  exchangeId?: string;
-  sortOrder: "asc" | "desc";
-}, options?: { timeZone?: string }): Promise<Buffer> {
+export async function exportExchangeTopupsToBuffer(
+  query: ExportExchangeTopupQuery,
+  options?: { timeZone?: string },
+): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;
   const result = await listExchangeTopups({
     ...query,

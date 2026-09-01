@@ -45,6 +45,11 @@ export const listExchangeQuerySchema = z.object({
   bonus_op: z.string().optional(),
 });
 
+export const exportExchangeQuerySchema = listExchangeQuerySchema.omit({
+  page: true,
+  pageSize: true,
+});
+
 export const exchangeIdParamSchema = z.object({
   id: z.string().min(24).max(24),
 });

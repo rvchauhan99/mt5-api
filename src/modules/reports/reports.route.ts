@@ -5,6 +5,7 @@ import { PERMISSIONS } from "../../shared/constants/permissions";
 import { validate } from "../../shared/middlewares/validate.middleware";
 import {
   dashboardSummaryQuerySchema,
+  exportExpenseAnalysisQuerySchema,
   expenseAnalysisRecordsQuerySchema,
   expenseAnalysisSummaryQuerySchema,
 } from "./reports.validation";
@@ -64,7 +65,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/expense-analysis/export",
   permissionMiddleware(PERMISSIONS.REPORTS_EXPENSE_ANALYSIS),
-  validate({ query: expenseAnalysisRecordsQuerySchema }),
+  validate({ query: exportExpenseAnalysisQuerySchema }),
   exportExpenseAnalysisController,
 );
 

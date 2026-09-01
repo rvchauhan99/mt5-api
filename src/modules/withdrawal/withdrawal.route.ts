@@ -36,6 +36,7 @@ import {
   createBulkBankerApproveJobBodySchema,
   createWithdrawalBodySchema,
   createWithdrawalImportJobBodySchema,
+  exportWithdrawalQuerySchema,
   listWithdrawalQuerySchema,
   updateWithdrawalBodySchema,
   updateWithdrawalStatusBodySchema,
@@ -176,7 +177,7 @@ withdrawalRouter.get(
 withdrawalRouter.get(
   "/export",
   withdrawalListPermissionMiddleware,
-  validate({ query: listWithdrawalQuerySchema }),
+  validate({ query: exportWithdrawalQuerySchema }),
   exportWithdrawalController,
 );
 

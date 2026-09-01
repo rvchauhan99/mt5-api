@@ -24,6 +24,7 @@ import type { WithdrawalAmendmentSnapshot, WithdrawalDocument } from "./withdraw
 import { WithdrawalModel, WithdrawalStatus } from "./withdrawal.model";
 import {
   amendWithdrawalBodySchema,
+  exportWithdrawalQuerySchema,
   listWithdrawalQuerySchema,
   withdrawalBankerPayoutBodySchema,
 } from "./withdrawal.validation";
@@ -40,6 +41,7 @@ import { getCurrencyMinUnit } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 
 type ListWithdrawalQuery = z.infer<typeof listWithdrawalQuerySchema>;
+type ExportWithdrawalQuery = z.infer<typeof exportWithdrawalQuerySchema>;
 type AmendWithdrawalInput = z.infer<typeof amendWithdrawalBodySchema>;
 type BankerPayoutInput = z.infer<typeof withdrawalBankerPayoutBodySchema>;
 type DuplicateTransactionContext = {
@@ -287,7 +289,7 @@ function viewBaseCondition(view: ListWithdrawalQuery["view"]): Record<string, un
   }
 }
 
-function buildWithdrawalListFilter(q: ListWithdrawalQuery, timeZone: string): Record<string, unknown> {
+function buildWithdrawalListFilter(q: ExportWithdrawalQuery, timeZone: string): Record<string, unknown> {
   const conditions: Record<string, unknown>[] = [viewBaseCondition(q.view)];
 
   const search = trimUndef(q.search);
@@ -1056,7 +1058,7 @@ export async function listSavedAccountsForPlayer(playerId: string) {
 const EXPORT_MAX_ROWS = 10_000;
 
 export async function exportWithdrawalsToBuffer(
-  query: ListWithdrawalQuery,
+  query: ExportWithdrawalQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;

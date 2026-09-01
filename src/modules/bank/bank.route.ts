@@ -18,6 +18,7 @@ import {
   bankLedgerQuerySchema,
   createBankBodySchema,
   createBankSettlementBodySchema,
+  exportBankQuerySchema,
   listBankQuerySchema,
 } from "./bank.validation";
 
@@ -28,7 +29,7 @@ bankRouter.post("/", permissionMiddleware(PERMISSIONS.BANK_ADD), validate({ body
 bankRouter.get(
   "/export",
   permissionMiddleware(PERMISSIONS.BANK_LIST),
-  validate({ query: listBankQuerySchema }),
+  validate({ query: exportBankQuerySchema }),
   exportBankController,
 );
 bankRouter.get(

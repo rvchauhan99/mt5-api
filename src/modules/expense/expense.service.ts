@@ -22,6 +22,7 @@ import { ExpenseModel, ExpenseStatus } from "./expense.model";
 import {
   approveExpenseBodySchema,
   cancelExpenseBodySchema,
+  exportExpenseQuerySchema,
   listExpenseQuerySchema,
 } from "./expense.validation";
 import { deleteFile, getSignedUrl, uploadFile } from "../../shared/services/bucket.service";
@@ -32,6 +33,7 @@ import { requirePlatformCurrency } from "../settings/settings.service";
 type CancelExpenseInput = z.infer<typeof cancelExpenseBodySchema>;
 
 type ListExpenseQuery = z.infer<typeof listExpenseQuerySchema>;
+type ExportExpenseQuery = z.infer<typeof exportExpenseQuerySchema>;
 type ApproveExpenseInput = z.infer<typeof approveExpenseBodySchema>;
 
 function pageSizeFromQuery(q: ListExpenseQuery): number {
@@ -110,7 +112,7 @@ function expenseDateCondition(
   return null;
 }
 
-function buildListFilter(q: ListExpenseQuery, timeZone: string): Record<string, unknown> {
+function buildListFilter(q: ExportExpenseQuery, timeZone: string): Record<string, unknown> {
   const conditions: Record<string, unknown>[] = [];
 
   const search = trimUndef(q.search);
@@ -704,7 +706,7 @@ function formatUserForExport(user: unknown): string {
 }
 
 export async function exportExpensesToBuffer(
-  query: ListExpenseQuery,
+  query: ExportExpenseQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;

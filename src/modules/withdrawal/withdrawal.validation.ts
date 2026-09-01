@@ -115,6 +115,13 @@ export const listWithdrawalQuerySchema = z.object({
   hasAmendment: z.enum(["yes", "no"]).optional(),
 });
 
+export const exportWithdrawalQuerySchema = listWithdrawalQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
+  cursor: true,
+});
+
 export const approvalQueueEventsQuerySchema = z.object({
   view: z.enum(["banker", "exchange"]),
 });
@@ -158,7 +165,6 @@ const withdrawalImportRowSchema = z
     payoutBankId: z.string().length(24).optional(),
     payoutLiabilityPersonId: z.string().length(24).optional(),
   })
-  .merge(moneyFxInputSchema)
   .superRefine((data, ctx) => {
     const mode = data.payoutSettlementType ?? "bank";
     if (mode === "bank") {

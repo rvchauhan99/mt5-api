@@ -35,6 +35,7 @@ import { DepositModel, DepositStatus } from "./deposit.model";
 import {
   amendDepositBodySchema,
   createDepositBodySchema,
+  exportDepositQuerySchema,
   listDepositQuerySchema,
   updateDepositBodySchema,
 } from "./deposit.validation";
@@ -61,6 +62,7 @@ import { resolveMasterExchangeRate } from "../lookup/exchange-rate-lookup.servic
 export const DEPOSIT_IMPORT_CHUNK_SIZE = 100;
 
 type ListDepositQuery = z.infer<typeof listDepositQuerySchema>;
+type ExportDepositQuery = z.infer<typeof exportDepositQuerySchema>;
 type AmendDepositInput = z.infer<typeof amendDepositBodySchema>;
 type BankerDepositUpdateInput = z.infer<typeof updateDepositBodySchema>;
 type CreateDepositBody = z.infer<typeof createDepositBodySchema>;
@@ -209,7 +211,7 @@ function transactionDateCondition(
   return null;
 }
 
-function buildDepositListFilter(q: ListDepositQuery, timeZone: string): Record<string, unknown> {
+function buildDepositListFilter(q: ExportDepositQuery, timeZone: string): Record<string, unknown> {
   const conditions: Record<string, unknown>[] = [];
 
   // IB commission settle used to create bonus deposits; never show them in deposit queues.
@@ -729,7 +731,7 @@ function formatUserForExport(u: unknown): string {
 }
 
 export async function exportDepositsToBuffer(
-  query: ListDepositQuery,
+  query: ExportDepositQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;

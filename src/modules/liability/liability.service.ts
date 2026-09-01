@@ -18,13 +18,21 @@ import {
 } from "../../shared/utils/timezone";
 import { type LiabilityEntryDocument, LiabilityEntryModel } from "./liability-entry.model";
 import { LiabilityPersonModel } from "./liability-person.model";
-import { liabilityLedgerQuerySchema, listLiabilityEntryQuerySchema, listLiabilityPersonQuerySchema } from "./liability.validation";
+import {
+  exportLiabilityEntryQuerySchema,
+  exportLiabilityPersonQuerySchema,
+  liabilityLedgerQuerySchema,
+  listLiabilityEntryQuerySchema,
+  listLiabilityPersonQuerySchema,
+} from "./liability.validation";
 import { resolveMoneyFromRequest, resolveOpeningMoneyFromRequest } from "../../shared/utils/moneyFx";
 import { getCurrencyMinUnit } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 
 type ListLiabilityPersonQuery = z.infer<typeof listLiabilityPersonQuerySchema>;
+type ExportLiabilityPersonQuery = z.infer<typeof exportLiabilityPersonQuerySchema>;
 type ListLiabilityEntryQuery = z.infer<typeof listLiabilityEntryQuerySchema>;
+type ExportLiabilityEntryQuery = z.infer<typeof exportLiabilityEntryQuerySchema>;
 type LedgerQuery = z.infer<typeof liabilityLedgerQuerySchema>;
 type LiabilityViewMode = "platform" | "person";
 
@@ -813,11 +821,11 @@ function formatUserForExport(user: unknown): string {
 }
 
 export async function exportLiabilityPersonsToBuffer(
-  query: ListLiabilityPersonQuery,
+  query: ExportLiabilityPersonQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;
-  const result = await listLiabilityPersons({ ...query, page: 1, limit: EXPORT_MAX_ROWS }, options);
+  const result = await listLiabilityPersons({ ...query, page: 1, pageSize: EXPORT_MAX_ROWS }, options);
   const exportData = result.rows.map((r) => ({
     Name: r.name,
     Phone: r.phone ?? "",
@@ -841,11 +849,11 @@ export async function exportLiabilityPersonsToBuffer(
 }
 
 export async function exportLiabilityEntriesToBuffer(
-  query: ListLiabilityEntryQuery,
+  query: ExportLiabilityEntryQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;
-  const result = await listLiabilityEntries({ ...query, page: 1, limit: EXPORT_MAX_ROWS }, options);
+  const result = await listLiabilityEntries({ ...query, page: 1, pageSize: EXPORT_MAX_ROWS }, options);
   const exportData = result.rows.map((r) => ({
     Date: formatDateForTimeZone(r.entryDate, timeZone),
     Type: r.entryType,

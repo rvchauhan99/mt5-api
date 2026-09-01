@@ -39,6 +39,12 @@ export const listExpenseQuerySchema = z.object({
   expenseDate_op: z.string().optional(),
 });
 
+export const exportExpenseQuerySchema = listExpenseQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
+});
+
 export const approveExpenseBodySchema = z.discriminatedUnion("settlementAccountType", [
   z.object({
     settlementAccountType: z.literal("bank"),

@@ -12,10 +12,11 @@ import {
   ymdToUtcStart,
 } from "../../shared/utils/timezone";
 import { PlayerModel } from "./player.model";
-import { listPlayerQuerySchema } from "./player.validation";
+import { exportPlayerQuerySchema, listPlayerQuerySchema } from "./player.validation";
 import { decodeTimeCursor, encodeTimeCursor } from "../../shared/utils/cursorPagination";
 
 type ListPlayerQuery = z.infer<typeof listPlayerQuerySchema>;
+type ExportPlayerQuery = z.infer<typeof exportPlayerQuerySchema>;
 
 const EXPORT_MAX_ROWS = 10_000;
 
@@ -138,7 +139,7 @@ function createdAtCondition(
   return null;
 }
 
-async function buildPlayerListFilter(q: ListPlayerQuery, timeZone: string): Promise<Record<string, unknown>> {
+async function buildPlayerListFilter(q: ExportPlayerQuery, timeZone: string): Promise<Record<string, unknown>> {
   const conditions: Record<string, unknown>[] = [];
 
   const search = trimUndef(q.search);
@@ -513,7 +514,7 @@ export async function listPlayers(query: ListPlayerQuery, options?: { timeZone?:
 }
 
 export async function exportPlayersToBuffer(
-  query: ListPlayerQuery,
+  query: ExportPlayerQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;

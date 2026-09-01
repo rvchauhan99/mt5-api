@@ -73,3 +73,10 @@ export const listPlayerQuerySchema = z.object({
   bonusPercentage_to: z.string().optional(),
   bonusPercentage_op: z.string().optional(),
 });
+
+export const exportPlayerQuerySchema = listPlayerQuerySchema.omit({
+  page: true,
+  pageSize: true,
+  limit: true,
+  cursor: true,
+});

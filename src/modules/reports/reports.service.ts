@@ -22,6 +22,8 @@ import {
 } from "../../shared/utils/timezone";
 import {
   dashboardSummaryQuerySchema,
+  exportExpenseAnalysisQuerySchema,
+  exportTransactionHistoryQuerySchema,
   expenseAnalysisFilterQuerySchema,
   expenseAnalysisRecordsQuerySchema,
   transactionHistoryQuerySchema,
@@ -30,7 +32,9 @@ import {
 type DashboardSummaryQuery = z.infer<typeof dashboardSummaryQuerySchema>;
 type ExpenseAnalysisFilterQuery = z.infer<typeof expenseAnalysisFilterQuerySchema>;
 type ExpenseAnalysisRecordsQuery = z.infer<typeof expenseAnalysisRecordsQuerySchema>;
+type ExportExpenseAnalysisQuery = z.infer<typeof exportExpenseAnalysisQuerySchema>;
 type TransactionHistoryQuery = z.infer<typeof transactionHistoryQuerySchema>;
+type ExportTransactionHistoryQuery = z.infer<typeof exportTransactionHistoryQuerySchema>;
 
 /** Transaction reports exclude login audits; login history is auth rows only. */
 export type AuditHistoryScope = "transactions" | "login";
@@ -1564,7 +1568,7 @@ export async function getTransactionHistory(
 }
 
 export async function exportTransactionHistoryToBuffer(
-  query: TransactionHistoryQuery,
+  query: ExportTransactionHistoryQuery,
   options: { scope: AuditHistoryScope; timeZone?: string },
 ): Promise<Buffer> {
   const result = await getTransactionHistory(
@@ -1694,7 +1698,7 @@ export async function exportDashboardSummaryToBuffer(
 }
 
 export async function exportExpenseAnalysisToBuffer(
-  query: ExpenseAnalysisRecordsQuery,
+  query: ExportExpenseAnalysisQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
   const timeZone = options?.timeZone || DEFAULT_TIMEZONE;
