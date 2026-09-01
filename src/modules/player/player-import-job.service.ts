@@ -146,7 +146,7 @@ export async function getPlayerImportJobErrorCsv(jobId: string, actorId: string)
   }
 
   return {
-    fileName: `player-import-errors-${jobId}.csv`,
+    fileName: `trader-import-errors-${jobId}.csv`,
     buffer: buildPlayerImportErrorCsvBuffer(errors),
   };
 }

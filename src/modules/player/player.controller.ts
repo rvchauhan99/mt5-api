@@ -41,7 +41,7 @@ function parseImportRowErrors(error: unknown): ImportRowError[] {
 
 function makeImportErrorFileName() {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `player-import-errors-${timestamp}.csv`;
+  return `trader-import-errors-${timestamp}.csv`;
 }
 
 export async function createPlayerController(req: Request, res: Response) {
@@ -67,7 +67,7 @@ export async function exportPlayerController(req: Request, res: Response) {
   const query = listPlayerQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportPlayersToBuffer(query, { timeZone });
-  res.setHeader("Content-Disposition", 'attachment; filename="players-export.xlsx"');
+  res.setHeader("Content-Disposition", 'attachment; filename="traders-export.xlsx"');
   res.setHeader(
     "Content-Type",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -77,7 +77,7 @@ export async function exportPlayerController(req: Request, res: Response) {
 
 export async function samplePlayerCsvController(_req: Request, res: Response) {
   const buffer = getSampleCsvBuffer();
-  res.setHeader("Content-Disposition", 'attachment; filename="players-sample.csv"');
+  res.setHeader("Content-Disposition", 'attachment; filename="traders-sample.csv"');
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.status(StatusCodes.OK).send(buffer);
 }

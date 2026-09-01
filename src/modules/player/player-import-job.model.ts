@@ -1,4 +1,5 @@
 import { Schema, model, Types } from "mongoose";
+import { PLAYER_IMPORT_CSV_COLUMNS, type ImportErrorRowData } from "./player.service";
 
 export type PlayerImportJobStatus =
   | "queued"
@@ -11,15 +12,7 @@ export interface PlayerImportJobErrorItem {
   row: number;
   message: string;
   reason: string;
-  rowData: {
-    exchange_name: string;
-    player_id: string;
-    phone: string;
-    user_type: string;
-    bonus_percentage: string;
-    first_deposit_bonus_percentage: string;
-    old_player: string;
-  };
+  rowData: ImportErrorRowData;
 }
 
 export interface PlayerImportJobProgress {
@@ -70,13 +63,13 @@ const errorItemSchema = new Schema<PlayerImportJobErrorItem>(
     message: { type: String, required: true },
     reason: { type: String, required: true },
     rowData: {
-      exchange_name: { type: String, required: true, default: "" },
-      player_id: { type: String, required: true, default: "" },
-      phone: { type: String, required: true, default: "" },
-      user_type: { type: String, required: true, default: "" },
-      bonus_percentage: { type: String, required: true, default: "" },
-      first_deposit_bonus_percentage: { type: String, required: true, default: "" },
-      old_player: { type: String, required: true, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.exchange]: { type: String, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.traderId]: { type: String, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.phoneNumber]: { type: String, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.emailId]: { type: String, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.userType]: { type: String, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.ib]: { type: String, default: "" },
+      [PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb]: { type: String, default: "" },
     },
   },
   { _id: false },

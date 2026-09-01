@@ -10,6 +10,12 @@ import { PlayerImportJobModel } from "../src/modules/player/player-import-job.mo
 import { UserModel } from "../src/modules/users/user.model";
 import { WithdrawalModel } from "../src/modules/withdrawal/withdrawal.model";
 import { bootstrapData } from "../src/shared/db/bootstrap";
+import {
+  PLAYER_IMPORT_CSV_COLUMNS,
+  PLAYER_IMPORT_CSV_HEADER_LIST,
+} from "../src/modules/player/player.service";
+
+const PLAYER_IMPORT_CSV_HEADER = PLAYER_IMPORT_CSV_HEADER_LIST.join(",");
 
 describe("Exchange API integration", () => {
   let mongo: MongoMemoryServer;
@@ -357,9 +363,22 @@ describe("Exchange API integration", () => {
   });
 
   it("returns downloadable CSV when sync player import has invalid rows", async () => {
+    const actor = await UserModel.findOne({ username: "superadmin" }).select("_id").lean();
+    expect(actor?._id).toBeDefined();
+
+    await ExchangeModel.create({
+      name: "E2E Import Invalid Email",
+      provider: "Provider Import",
+      openingBalance: 100,
+      bonus: 0,
+      status: "active",
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
     const invalidCsv = [
-      "exchange_name,player_id,phone,bonus_percentage,first_deposit_bonus_percentage",
-      "E2E,PLAYER-1,,abc,10",
+      PLAYER_IMPORT_CSV_HEADER,
+      `E2E Import Invalid Email,PLAYER-1,9000000001,invalid-email,trader,,`,
     ].join("\n");
 
     const res = await request(app)
@@ -372,8 +391,160 @@ describe("Exchange API integration", () => {
     expect(String(res.headers["content-disposition"] ?? "")).toContain("attachment");
     const body = Buffer.isBuffer(res.body) ? res.body.toString("utf-8") : String(res.text ?? "");
     expect(body).toContain("error_reason");
-    expect(body).toContain("phone is required");
+    expect(body).toContain("Email ID must be a valid email address");
     expect(body).toContain("PLAYER-1");
+  });
+
+  it("imports traders with email, IB referral, and referral percentage", async () => {
+    const actor = await UserModel.findOne({ username: "superadmin" }).select("_id").lean();
+    expect(actor?._id).toBeDefined();
+
+    const exchange = await ExchangeModel.create({
+      name: "E2E Import Happy",
+      provider: "Provider Import",
+      openingBalance: 100,
+      bonus: 0,
+      status: "active",
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
+    await PlayerModel.create({
+      exchange: exchange._id,
+      playerId: "IB-IMPORT-001",
+      phone: "9111111111",
+      userType: "ib",
+      regularBonusPercentage: 0,
+      firstDepositBonusPercentage: 0,
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
+    const validCsv = [
+      PLAYER_IMPORT_CSV_HEADER,
+      `E2E Import Happy,TRADER-IMPORT-001,9222222222,trader@import.test,trader,IB-IMPORT-001,12.5`,
+    ].join("\n");
+
+    const res = await request(app)
+      .post("/api/v1/players/import")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .attach("file", Buffer.from(validCsv, "utf-8"), "players.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.created).toBe(1);
+
+    const created = await PlayerModel.findOne({ exchange: exchange._id, playerId: "TRADER-IMPORT-001" })
+      .populate("referredByPlayerId", "playerId")
+      .lean();
+    expect(created?.email).toBe("trader@import.test");
+    expect(created?.referralPercentage).toBe(12.5);
+    expect(created?.regularBonusPercentage).toBe(0);
+    expect(created?.firstDepositBonusPercentage).toBe(0);
+    const referrer = created?.referredByPlayerId as { playerId?: string } | null | undefined;
+    expect(referrer?.playerId).toBe("IB-IMPORT-001");
+  });
+
+  it("rejects import when ib_player_id is not found", async () => {
+    const actor = await UserModel.findOne({ username: "superadmin" }).select("_id").lean();
+    expect(actor?._id).toBeDefined();
+
+    await ExchangeModel.create({
+      name: "E2E Import Missing IB",
+      provider: "Provider Import",
+      openingBalance: 100,
+      bonus: 0,
+      status: "active",
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
+    const invalidCsv = [
+      PLAYER_IMPORT_CSV_HEADER,
+      `E2E Import Missing IB,TRADER-IMPORT-002,9333333333,,trader,MISSING-IB,5`,
+    ].join("\n");
+
+    const res = await request(app)
+      .post("/api/v1/players/import")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .attach("file", Buffer.from(invalidCsv, "utf-8"), "players.csv");
+
+    expect(res.status).toBe(400);
+    const body = Buffer.isBuffer(res.body) ? res.body.toString("utf-8") : String(res.text ?? "");
+    expect(body).toContain(`No ${PLAYER_IMPORT_CSV_COLUMNS.ib} found`);
+  });
+
+  it("rejects import when ib_player_id refers to a trader not IB", async () => {
+    const actor = await UserModel.findOne({ username: "superadmin" }).select("_id").lean();
+    expect(actor?._id).toBeDefined();
+
+    const exchange = await ExchangeModel.create({
+      name: "E2E Import Not IB",
+      provider: "Provider Import",
+      openingBalance: 100,
+      bonus: 0,
+      status: "active",
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
+    await PlayerModel.create({
+      exchange: exchange._id,
+      playerId: "NOT-IB-001",
+      phone: "9444444444",
+      userType: "trader",
+      regularBonusPercentage: 0,
+      firstDepositBonusPercentage: 0,
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
+    const invalidCsv = [
+      PLAYER_IMPORT_CSV_HEADER,
+      `E2E Import Not IB,TRADER-IMPORT-003,9555555555,,trader,NOT-IB-001,5`,
+    ].join("\n");
+
+    const res = await request(app)
+      .post("/api/v1/players/import")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .attach("file", Buffer.from(invalidCsv, "utf-8"), "players.csv");
+
+    expect(res.status).toBe(400);
+    const body = Buffer.isBuffer(res.body) ? res.body.toString("utf-8") : String(res.text ?? "");
+    expect(body).toContain(`No ${PLAYER_IMPORT_CSV_COLUMNS.ib} found`);
+  });
+
+  it("ignores legacy bonus and old_player columns during import", async () => {
+    const actor = await UserModel.findOne({ username: "superadmin" }).select("_id").lean();
+    expect(actor?._id).toBeDefined();
+
+    const exchange = await ExchangeModel.create({
+      name: "E2E Import Legacy",
+      provider: "Provider Import",
+      openingBalance: 100,
+      bonus: 0,
+      status: "active",
+      createdBy: actor!._id,
+      updatedBy: actor!._id,
+    });
+
+    const legacyCsv = [
+      "exchange_name,player_id,phone,bonus_percentage,first_deposit_bonus_percentage,old_player",
+      "E2E Import Legacy,TRADER-LEGACY-001,9666666666,25,30,yes",
+    ].join("\n");
+
+    const res = await request(app)
+      .post("/api/v1/players/import")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .attach("file", Buffer.from(legacyCsv, "utf-8"), "players.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.created).toBe(1);
+
+    const created = await PlayerModel.findOne({ exchange: exchange._id, playerId: "TRADER-LEGACY-001" }).lean();
+    expect(created?.regularBonusPercentage).toBe(0);
+    expect(created?.firstDepositBonusPercentage).toBe(0);
+    expect(created?.isMigratedOldUser).toBe(false);
   });
 
   it("downloads async player import job error CSV after job failure", async () => {
@@ -398,28 +569,32 @@ describe("Exchange API integration", () => {
       errorSample: [
         {
           row: 2,
-          message: "phone is required",
-          reason: "phone is required",
+          message: "Phone Number is required",
+          reason: "Phone Number is required",
           rowData: {
-            exchange_name: "E2E",
-            player_id: "PLAYER-2",
-            phone: "(empty)",
-            bonus_percentage: "5",
-            first_deposit_bonus_percentage: "10",
+            [PLAYER_IMPORT_CSV_COLUMNS.exchange]: "E2E",
+            [PLAYER_IMPORT_CSV_COLUMNS.traderId]: "PLAYER-2",
+            [PLAYER_IMPORT_CSV_COLUMNS.phoneNumber]: "(empty)",
+            [PLAYER_IMPORT_CSV_COLUMNS.emailId]: "",
+            [PLAYER_IMPORT_CSV_COLUMNS.userType]: "trader",
+            [PLAYER_IMPORT_CSV_COLUMNS.ib]: "",
+            [PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb]: "0",
           },
         },
       ],
       errorRows: [
         {
           row: 2,
-          message: "phone is required",
-          reason: "phone is required",
+          message: "Phone Number is required",
+          reason: "Phone Number is required",
           rowData: {
-            exchange_name: "E2E",
-            player_id: "PLAYER-2",
-            phone: "(empty)",
-            bonus_percentage: "5",
-            first_deposit_bonus_percentage: "10",
+            [PLAYER_IMPORT_CSV_COLUMNS.exchange]: "E2E",
+            [PLAYER_IMPORT_CSV_COLUMNS.traderId]: "PLAYER-2",
+            [PLAYER_IMPORT_CSV_COLUMNS.phoneNumber]: "(empty)",
+            [PLAYER_IMPORT_CSV_COLUMNS.emailId]: "",
+            [PLAYER_IMPORT_CSV_COLUMNS.userType]: "trader",
+            [PLAYER_IMPORT_CSV_COLUMNS.ib]: "",
+            [PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb]: "0",
           },
         },
       ],
@@ -431,10 +606,10 @@ describe("Exchange API integration", () => {
 
     expect(res.status).toBe(200);
     expect(String(res.headers["content-type"] ?? "")).toContain("text/csv");
-    expect(String(res.headers["content-disposition"] ?? "")).toContain(`player-import-errors-${failedJob._id.toString()}.csv`);
+    expect(String(res.headers["content-disposition"] ?? "")).toContain(`trader-import-errors-${failedJob._id.toString()}.csv`);
     const body = Buffer.isBuffer(res.body) ? res.body.toString("utf-8") : String(res.text ?? "");
     expect(body).toContain("error_reason");
-    expect(body).toContain("phone is required");
+    expect(body).toContain(`${PLAYER_IMPORT_CSV_COLUMNS.phoneNumber} is required`);
     expect(body).toContain("PLAYER-2");
   });
 

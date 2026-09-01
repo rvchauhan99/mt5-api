@@ -567,10 +567,51 @@ export async function exportPlayersToBuffer(
   return generateExcelBuffer(exportData, "Players");
 }
 
+/** CSV column headers — match Trader / Add form labels. */
+export const PLAYER_IMPORT_CSV_COLUMNS = {
+  exchange: "Exchange",
+  traderId: "Trader Id",
+  phoneNumber: "Phone Number",
+  emailId: "Email ID",
+  userType: "User type",
+  ib: "IB",
+  referralPercentageForIb: "Referral Percentage for IB",
+} as const;
+
+export const PLAYER_IMPORT_CSV_HEADER_LIST = [
+  PLAYER_IMPORT_CSV_COLUMNS.exchange,
+  PLAYER_IMPORT_CSV_COLUMNS.traderId,
+  PLAYER_IMPORT_CSV_COLUMNS.phoneNumber,
+  PLAYER_IMPORT_CSV_COLUMNS.emailId,
+  PLAYER_IMPORT_CSV_COLUMNS.userType,
+  PLAYER_IMPORT_CSV_COLUMNS.ib,
+  PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb,
+] as const;
+
+function makeImportRowData(fields: {
+  exchangeName?: string;
+  playerId?: string;
+  phone?: string;
+  email?: string;
+  userType?: string;
+  ibPlayerId?: string;
+  referralPercentage?: string;
+}): ImportErrorRowData {
+  return {
+    [PLAYER_IMPORT_CSV_COLUMNS.exchange]: fields.exchangeName ?? "",
+    [PLAYER_IMPORT_CSV_COLUMNS.traderId]: fields.playerId ?? "",
+    [PLAYER_IMPORT_CSV_COLUMNS.phoneNumber]: fields.phone ?? "",
+    [PLAYER_IMPORT_CSV_COLUMNS.emailId]: fields.email ?? "",
+    [PLAYER_IMPORT_CSV_COLUMNS.userType]: fields.userType ?? "",
+    [PLAYER_IMPORT_CSV_COLUMNS.ib]: fields.ibPlayerId ?? "",
+    [PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb]: fields.referralPercentage ?? "",
+  };
+}
+
 export function getSampleCsvBuffer(): Buffer {
-  const header =
-    "exchange_name,player_id,phone,user_type,bonus_percentage,first_deposit_bonus_percentage,old_player\n";
-  const example = "Example Exchange,PLAYER001,9876543210,trader,5,10,no\n";
+  const header = `${PLAYER_IMPORT_CSV_HEADER_LIST.join(",")}\n`;
+  const example =
+    "Example Exchange,PLAYER001,9876543210,trader@example.com,trader,IB001,5\n";
   return Buffer.from(header + example, "utf-8");
 }
 
@@ -601,13 +642,13 @@ function pickCellRaw(row: Record<string, unknown>, ...aliases: string[]): string
 }
 
 export type ImportErrorRowData = {
-  exchange_name: string;
-  player_id: string;
-  phone: string;
-  user_type: string;
-  bonus_percentage: string;
-  first_deposit_bonus_percentage: string;
-  old_player: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.exchange]: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.traderId]: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.phoneNumber]: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.emailId]: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.userType]: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.ib]: string;
+  [PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb]: string;
 };
 
 export type ImportRowError = {
@@ -631,29 +672,19 @@ function quoteCsvValue(value: string): string {
 }
 
 export function buildPlayerImportErrorCsvBuffer(errors: ImportRowError[]): Buffer {
-  const header = [
-    "row",
-    "exchange_name",
-    "player_id",
-    "phone",
-    "user_type",
-    "bonus_percentage",
-    "first_deposit_bonus_percentage",
-    "old_player",
-    "error_reason",
-  ];
+  const header = ["row", ...PLAYER_IMPORT_CSV_HEADER_LIST, "error_reason"];
   const lines = [header.join(",")];
   for (const error of errors) {
     lines.push(
       [
         String(error.row),
-        quoteCsvValue(error.rowData.exchange_name),
-        quoteCsvValue(error.rowData.player_id),
-        quoteCsvValue(error.rowData.phone),
-        quoteCsvValue(error.rowData.user_type),
-        quoteCsvValue(error.rowData.bonus_percentage),
-        quoteCsvValue(error.rowData.first_deposit_bonus_percentage),
-        quoteCsvValue(error.rowData.old_player),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.exchange]),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.traderId]),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.phoneNumber]),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.emailId]),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.userType]),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.ib]),
+        quoteCsvValue(error.rowData[PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb]),
         quoteCsvValue(error.reason),
       ].join(","),
     );
@@ -687,23 +718,22 @@ function parsePercentageCell(
   return { ok: true, value: n };
 }
 
-function parseMigratedOldUserCell(
+const IMPORT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function parseEmailCell(
   raw: string,
   rowNum: number,
   rowData: ImportErrorRowData,
-): { ok: true; value: boolean | undefined } | { ok: false; error: ImportRowError } {
-  const t = raw.trim().toLowerCase();
-  if (t === "") return { ok: true, value: false };
-  if (t === "yes") return { ok: true, value: true };
-  if (t === "no") return { ok: true, value: false };
-  return {
-    ok: false,
-    error: buildImportError(
-      rowNum,
-      "old_player must be yes/no (or blank)",
-      rowData,
-    ),
-  };
+): { ok: true; value: string | undefined } | { ok: false; error: ImportRowError } {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { ok: true, value: undefined };
+  if (!IMPORT_EMAIL_REGEX.test(trimmed)) {
+    return {
+      ok: false,
+      error: buildImportError(rowNum, "Email ID must be a valid email address", rowData),
+    };
+  }
+  return { ok: true, value: trimmed.toLowerCase() };
 }
 
 function parseUserTypeCell(
@@ -716,7 +746,11 @@ function parseUserTypeCell(
   if (t === "ib") return { ok: true, value: "ib" };
   return {
     ok: false,
-    error: buildImportError(rowNum, "user_type must be trader or ib (or blank for trader)", rowData),
+    error: buildImportError(
+      rowNum,
+      `${PLAYER_IMPORT_CSV_COLUMNS.userType} must be trader or ib (or blank for trader)`,
+      rowData,
+    ),
   };
 }
 
@@ -730,11 +764,24 @@ type ParsedImportRow = {
   exchangeId: Types.ObjectId;
   playerId: string;
   phone: string;
+  email?: string;
   userType: "trader" | "ib";
-  regularBonusPercentage: number;
-  firstDepositBonusPercentage: number;
-  isMigratedOldUser?: boolean;
+  referredByPlayerId?: Types.ObjectId;
+  referralPercentage: number;
+  ibPlayerIdRaw: string;
 };
+
+function parsedImportRowToErrorData(row: ParsedImportRow): ImportErrorRowData {
+  return makeImportRowData({
+    exchangeName: row.exchangeName,
+    playerId: row.playerId,
+    phone: row.phone,
+    email: row.email ?? "",
+    userType: row.userType,
+    ibPlayerId: row.ibPlayerIdRaw,
+    referralPercentage: String(row.referralPercentage),
+  });
+}
 
 export type PlayerImportProgress = {
   totalRows: number;
@@ -807,6 +854,38 @@ async function resolveExchangeMapByName(names: string[]): Promise<Map<string, Ty
   return resolved;
 }
 
+async function resolveIbMapByExchangeAndPlayerId(
+  pairs: Array<{ exchangeId: Types.ObjectId; ibPlayerId: string }>,
+): Promise<Map<string, Types.ObjectId>> {
+  if (pairs.length === 0) return new Map();
+
+  const uniquePairs = new Map<string, { exchangeId: Types.ObjectId; ibPlayerId: string }>();
+  for (const pair of pairs) {
+    const ibPlayerId = pair.ibPlayerId.trim();
+    if (!ibPlayerId) continue;
+    const key = `${pair.exchangeId.toString()}:${ibPlayerId.toLowerCase()}`;
+    if (!uniquePairs.has(key)) {
+      uniquePairs.set(key, { exchangeId: pair.exchangeId, ibPlayerId });
+    }
+  }
+
+  const orConditions = Array.from(uniquePairs.values()).map((pair) => ({
+    exchange: pair.exchangeId,
+    playerId: pair.ibPlayerId,
+    userType: "ib" as const,
+  }));
+  if (orConditions.length === 0) return new Map();
+
+  const players = await PlayerModel.find({ $or: orConditions }).select("_id exchange playerId userType").lean();
+  const resolved = new Map<string, Types.ObjectId>();
+  for (const doc of players) {
+    if (doc.userType !== "ib") continue;
+    const key = `${(doc.exchange as Types.ObjectId).toString()}:${String(doc.playerId).trim().toLowerCase()}`;
+    resolved.set(key, doc._id as Types.ObjectId);
+  }
+  return resolved;
+}
+
 export async function parsePlayerImportFile(
   buffer: Buffer,
   originalName: string,
@@ -821,49 +900,80 @@ export async function parsePlayerImportFile(
     exchangeName: string;
     playerId: string;
     phone: string;
+    emailRaw: string;
     userTypeRaw: string;
-    regularBonusRaw: string;
-    firstDepositBonusRaw: string;
-    isMigratedOldUserRaw: string;
+    ibPlayerIdRaw: string;
+    referralPercentageRaw: string;
     rowData: ImportErrorRowData;
   }> = [];
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const rowNum = i + 2;
-    const exchangeName = pickCell(row, "exchange_name", "exchange", "exchange name");
-    const playerId = pickCell(row, "player_id", "playerid", "player id");
-    const phone = pickCell(row, "phone", "phone_number", "phone number", "mobile");
-    const userTypeRaw = pickCellRaw(row, "user_type", "userType", "user type", "type");
-    const regularBonusRaw = pickCellRaw(
+    const exchangeName = pickCell(
       row,
-      "bonus_percentage",
-      "bonus_percent",
-      "bonus",
-      "bonus percentage",
-      "bonus%",
+      PLAYER_IMPORT_CSV_COLUMNS.exchange,
+      "exchange_name",
+      "exchange",
+      "exchange name",
     );
-    const firstDepositBonusRaw = pickCellRaw(
+    const playerId = pickCell(
       row,
-      "first_deposit_bonus_percentage",
-      "first_deposit_bonus_percent",
-      "first deposit bonus percentage",
-      "first deposit bonus%",
-      "firstdepositbonuspercentage",
+      PLAYER_IMPORT_CSV_COLUMNS.traderId,
+      "player_id",
+      "playerid",
+      "player id",
+      "trader id",
     );
-    const isMigratedOldUserRaw = pickCellRaw(
+    const phone = pickCell(
       row,
-      "old_player",
+      PLAYER_IMPORT_CSV_COLUMNS.phoneNumber,
+      "phone",
+      "phone_number",
+      "phone number",
+      "mobile",
     );
-    const rowData: ImportErrorRowData = {
-      exchange_name: exchangeName,
-      player_id: playerId,
+    const emailRaw = pickCellRaw(
+      row,
+      PLAYER_IMPORT_CSV_COLUMNS.emailId,
+      "email",
+      "email id",
+      "email_id",
+    );
+    const userTypeRaw = pickCellRaw(
+      row,
+      PLAYER_IMPORT_CSV_COLUMNS.userType,
+      "user_type",
+      "userType",
+      "user type",
+      "type",
+    );
+    const ibPlayerIdRaw = pickCellRaw(
+      row,
+      PLAYER_IMPORT_CSV_COLUMNS.ib,
+      "ib_player_id",
+      "ib id",
+      "ib_player",
+      "ib trader id",
+    );
+    const referralPercentageRaw = pickCellRaw(
+      row,
+      PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb,
+      "referral_percentage",
+      "referral %",
+      "referral percent",
+      "referral_percentage_for_ib",
+      "referral percentage for ib",
+    );
+    const rowData = makeImportRowData({
+      exchangeName,
+      playerId,
       phone,
-      user_type: userTypeRaw,
-      bonus_percentage: regularBonusRaw,
-      first_deposit_bonus_percentage: firstDepositBonusRaw,
-      old_player: isMigratedOldUserRaw,
-    };
+      email: emailRaw,
+      userType: userTypeRaw,
+      ibPlayerId: ibPlayerIdRaw,
+      referralPercentage: referralPercentageRaw,
+    });
 
     if (!exchangeName && !playerId && !phone) {
       skipped += 1;
@@ -871,15 +981,21 @@ export async function parsePlayerImportFile(
     }
 
     if (!exchangeName) {
-      errors.push(buildImportError(rowNum, "exchange_name is required", rowData));
+      errors.push(
+        buildImportError(rowNum, `${PLAYER_IMPORT_CSV_COLUMNS.exchange} is required`, rowData),
+      );
       continue;
     }
     if (!playerId) {
-      errors.push(buildImportError(rowNum, "player_id is required", rowData));
+      errors.push(
+        buildImportError(rowNum, `${PLAYER_IMPORT_CSV_COLUMNS.traderId} is required`, rowData),
+      );
       continue;
     }
     if (!phone) {
-      errors.push(buildImportError(rowNum, "phone is required", rowData));
+      errors.push(
+        buildImportError(rowNum, `${PLAYER_IMPORT_CSV_COLUMNS.phoneNumber} is required`, rowData),
+      );
       continue;
     }
 
@@ -889,15 +1005,28 @@ export async function parsePlayerImportFile(
       exchangeName,
       playerId,
       phone,
+      emailRaw,
       userTypeRaw,
-      regularBonusRaw,
-      firstDepositBonusRaw,
-      isMigratedOldUserRaw,
+      ibPlayerIdRaw,
+      referralPercentageRaw,
       rowData,
     });
   }
 
   const exchangeMap = await resolveExchangeMapByName(exchangeNames);
+  const exchangeResolvedRows: Array<{
+    rowNum: number;
+    exchangeName: string;
+    exchangeId: Types.ObjectId;
+    playerId: string;
+    phone: string;
+    email?: string;
+    userType: "trader" | "ib";
+    ibPlayerIdRaw: string;
+    referralPercentage: number;
+    rowData: ImportErrorRowData;
+  }> = [];
+
   for (const row of rowInputCache) {
     const exchangeKey = row.exchangeName.trim().toLowerCase();
     const exchangeId = exchangeMap.get(exchangeKey);
@@ -917,24 +1046,9 @@ export async function parsePlayerImportFile(
       continue;
     }
 
-    const regularBonusParsed = parsePercentageCell(
-      row.regularBonusRaw,
-      row.rowNum,
-      "bonus_percentage",
-      row.rowData,
-    );
-    if (!regularBonusParsed.ok) {
-      errors.push(regularBonusParsed.error);
-      continue;
-    }
-    const firstDepositBonusParsed = parsePercentageCell(
-      row.firstDepositBonusRaw,
-      row.rowNum,
-      "first_deposit_bonus_percentage",
-      row.rowData,
-    );
-    if (!firstDepositBonusParsed.ok) {
-      errors.push(firstDepositBonusParsed.error);
+    const emailParsed = parseEmailCell(row.emailRaw, row.rowNum, row.rowData);
+    if (!emailParsed.ok) {
+      errors.push(emailParsed.error);
       continue;
     }
     const userTypeParsed = parseUserTypeCell(row.userTypeRaw, row.rowNum, row.rowData);
@@ -942,22 +1056,86 @@ export async function parsePlayerImportFile(
       errors.push(userTypeParsed.error);
       continue;
     }
-    const migratedOldUserParsed = parseMigratedOldUserCell(row.isMigratedOldUserRaw, row.rowNum, row.rowData);
-    if (!migratedOldUserParsed.ok) {
-      errors.push(migratedOldUserParsed.error);
+    const referralPercentageParsed = parsePercentageCell(
+      row.referralPercentageRaw,
+      row.rowNum,
+      PLAYER_IMPORT_CSV_COLUMNS.referralPercentageForIb,
+      row.rowData,
+    );
+    if (!referralPercentageParsed.ok) {
+      errors.push(referralPercentageParsed.error);
       continue;
     }
 
-    parsedRows.push({
+    const ibPlayerIdTrimmed = row.ibPlayerIdRaw.trim();
+    if (userTypeParsed.value === "ib" && ibPlayerIdTrimmed) {
+      errors.push(
+        buildImportError(
+          row.rowNum,
+          `${PLAYER_IMPORT_CSV_COLUMNS.ib} cannot be set when ${PLAYER_IMPORT_CSV_COLUMNS.userType} is ib`,
+          row.rowData,
+        ),
+      );
+      continue;
+    }
+    if (ibPlayerIdTrimmed && ibPlayerIdTrimmed.toLowerCase() === row.playerId.trim().toLowerCase()) {
+      errors.push(
+        buildImportError(
+          row.rowNum,
+          `${PLAYER_IMPORT_CSV_COLUMNS.ib} cannot be the same as ${PLAYER_IMPORT_CSV_COLUMNS.traderId}`,
+          row.rowData,
+        ),
+      );
+      continue;
+    }
+
+    exchangeResolvedRows.push({
       rowNum: row.rowNum,
       exchangeName: row.exchangeName,
       exchangeId,
       playerId: row.playerId,
       phone: row.phone,
+      email: emailParsed.value,
       userType: userTypeParsed.value,
-      regularBonusPercentage: regularBonusParsed.value,
-      firstDepositBonusPercentage: firstDepositBonusParsed.value,
-      isMigratedOldUser: migratedOldUserParsed.value,
+      ibPlayerIdRaw: ibPlayerIdTrimmed,
+      referralPercentage: referralPercentageParsed.value,
+      rowData: row.rowData,
+    });
+  }
+
+  const ibPairs = exchangeResolvedRows
+    .filter((row) => row.ibPlayerIdRaw)
+    .map((row) => ({ exchangeId: row.exchangeId, ibPlayerId: row.ibPlayerIdRaw }));
+  const ibMap = await resolveIbMapByExchangeAndPlayerId(ibPairs);
+
+  for (const row of exchangeResolvedRows) {
+    let referredByPlayerId: Types.ObjectId | undefined;
+    if (row.ibPlayerIdRaw) {
+      const ibKey = `${row.exchangeId.toString()}:${row.ibPlayerIdRaw.toLowerCase()}`;
+      referredByPlayerId = ibMap.get(ibKey);
+      if (!referredByPlayerId) {
+        errors.push(
+          buildImportError(
+            row.rowNum,
+            `No ${PLAYER_IMPORT_CSV_COLUMNS.ib} found for "${row.ibPlayerIdRaw}" on ${PLAYER_IMPORT_CSV_COLUMNS.exchange} "${row.exchangeName}"`,
+            row.rowData,
+          ),
+        );
+        continue;
+      }
+    }
+
+    parsedRows.push({
+      rowNum: row.rowNum,
+      exchangeName: row.exchangeName,
+      exchangeId: row.exchangeId,
+      playerId: row.playerId,
+      phone: row.phone,
+      email: row.email,
+      userType: row.userType,
+      referredByPlayerId,
+      referralPercentage: row.referralPercentage,
+      ibPlayerIdRaw: row.ibPlayerIdRaw,
     });
   }
 
@@ -968,17 +1146,9 @@ export async function parsePlayerImportFile(
     if (first !== undefined) {
       errors.push({
         row: p.rowNum,
-        message: `Duplicate player_id "${p.playerId}" for this exchange (same as row ${first})`,
-        reason: `Duplicate player_id "${p.playerId}" for this exchange (same as row ${first})`,
-        rowData: {
-          exchange_name: p.exchangeName,
-          player_id: p.playerId,
-          phone: p.phone,
-          user_type: p.userType,
-          bonus_percentage: String(p.regularBonusPercentage),
-          first_deposit_bonus_percentage: String(p.firstDepositBonusPercentage),
-          old_player: p.isMigratedOldUser ? "yes" : "no",
-        },
+        message: `Duplicate ${PLAYER_IMPORT_CSV_COLUMNS.traderId} "${p.playerId}" for this ${PLAYER_IMPORT_CSV_COLUMNS.exchange} (same as row ${first})`,
+        reason: `Duplicate ${PLAYER_IMPORT_CSV_COLUMNS.traderId} "${p.playerId}" for this ${PLAYER_IMPORT_CSV_COLUMNS.exchange} (same as row ${first})`,
+        rowData: parsedImportRowToErrorData(p),
       });
     } else {
       seenFirstRow.set(key, p.rowNum);
@@ -991,7 +1161,7 @@ export async function parsePlayerImportFile(
   if (parsedRows.length === 0) {
     throw new AppError(
       "validation_error",
-      "No data rows to import. Add at least one row with exchange_name, player_id, and phone.",
+      "No data rows to import. Add at least one row with Exchange, Trader Id, and Phone Number.",
       400,
     );
   }
@@ -1039,10 +1209,13 @@ export async function applyPlayerImportRows(
         exchange: p.exchangeId,
         playerId: p.playerId,
         phone: p.phone,
+        ...(p.email ? { email: p.email } : {}),
         userType: p.userType,
-        regularBonusPercentage: p.regularBonusPercentage,
-        firstDepositBonusPercentage: p.firstDepositBonusPercentage,
-        isMigratedOldUser: p.isMigratedOldUser ?? false,
+        regularBonusPercentage: 0,
+        firstDepositBonusPercentage: 0,
+        ...(p.referredByPlayerId ? { referredByPlayerId: p.referredByPlayerId } : {}),
+        referralPercentage: p.referralPercentage,
+        isMigratedOldUser: false,
         createdBy: actorOid,
         updatedBy: actorOid,
       }));
@@ -1052,18 +1225,34 @@ export async function applyPlayerImportRows(
         const key = `${p.exchangeId.toString()}:${p.playerId}`;
         const existingId = existingByKey.get(key);
         if (!existingId) return null;
+
+        const setFields: Record<string, unknown> = {
+          phone: p.phone,
+          userType: p.userType,
+          referralPercentage: p.referralPercentage,
+          updatedBy: actorOid,
+        };
+        if (p.email) {
+          setFields.email = p.email;
+        }
+        if (p.referredByPlayerId) {
+          setFields.referredByPlayerId = p.referredByPlayerId;
+        }
+
+        const unsetFields: Record<string, ""> = {};
+        if (!p.email) {
+          unsetFields.email = "";
+        }
+        if (!p.referredByPlayerId) {
+          unsetFields.referredByPlayerId = "";
+        }
+
         return {
           updateOne: {
             filter: { _id: existingId },
             update: {
-              $set: {
-                phone: p.phone,
-                userType: p.userType,
-                regularBonusPercentage: p.regularBonusPercentage,
-                firstDepositBonusPercentage: p.firstDepositBonusPercentage,
-                ...(typeof p.isMigratedOldUser === "boolean" ? { isMigratedOldUser: p.isMigratedOldUser } : {}),
-                updatedBy: actorOid,
-              },
+              $set: setFields,
+              ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
             },
           },
         };
