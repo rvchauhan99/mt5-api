@@ -142,12 +142,13 @@ export async function streamBulkBankerApproveJobEventsController(req: Request, r
 export async function sampleWithdrawalCsvController(req: Request, res: Response) {
   const format = String(req.query.format ?? "csv").toLowerCase();
   if (format === "xlsx") {
-    const buffer = buildWithdrawalImportSampleXlsx();
+    const buffer = await buildWithdrawalImportSampleXlsx();
     res.setHeader("Content-Disposition", 'attachment; filename="withdrawal-import-sample.xlsx"');
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
+    res.setHeader("Cache-Control", "no-store");
     res.status(StatusCodes.OK).send(buffer);
     return;
   }
@@ -158,9 +159,10 @@ export async function sampleWithdrawalCsvController(req: Request, res: Response)
     });
     return;
   }
-  const buffer = buildWithdrawalImportSampleCsv();
+  const buffer = await buildWithdrawalImportSampleCsv();
   res.setHeader("Content-Disposition", 'attachment; filename="withdrawal-import-sample.csv"');
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
   res.status(StatusCodes.OK).send(buffer);
 }
 

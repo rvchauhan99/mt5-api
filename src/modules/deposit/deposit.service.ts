@@ -53,9 +53,10 @@ import { escapeRegex as escapeUtrRegex, normalizeUtr } from "../../shared/utils/
 import { createLiabilityEntry, deleteLiabilityEntryForReversal } from "../liability/liability.service";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
 import { chunkArray } from "../../shared/utils/chunkArray";
-import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency } from "../../shared/utils/moneyFx";
-import { getCurrencyMinUnit } from "../../shared/constants/currencies";
+import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency, resolveMoneyInput } from "../../shared/utils/moneyFx";
+import { getCurrencyMinUnit, isSupportedCurrency, type SupportedCurrency } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
+import { resolveMasterExchangeRate } from "../lookup/exchange-rate-lookup.service";
 
 export const DEPOSIT_IMPORT_CHUNK_SIZE = 100;
 
@@ -1777,10 +1778,36 @@ export async function amendVerifiedDeposit(
 // CSV/Excel Import
 // ---------------------------------------------------------------------------
 
+/** CSV column headers — match Deposit / Exchange form labels. */
+export const DEPOSIT_IMPORT_CSV_COLUMNS = {
+  entryDateTime: "Entry date & time",
+  settlement: "Settlement",
+  bank: "Bank",
+  liabilityPerson: "Liability person",
+  referenceNumber: "Reference Number",
+  operatedCurrency: "Operated currency",
+  amount: "Amount",
+  traderWalletId: "Trader Wallet Id",
+} as const;
+
+export const DEPOSIT_IMPORT_CSV_HEADER_LIST = [
+  DEPOSIT_IMPORT_CSV_COLUMNS.entryDateTime,
+  DEPOSIT_IMPORT_CSV_COLUMNS.settlement,
+  DEPOSIT_IMPORT_CSV_COLUMNS.bank,
+  DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson,
+  DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber,
+  DEPOSIT_IMPORT_CSV_COLUMNS.operatedCurrency,
+  DEPOSIT_IMPORT_CSV_COLUMNS.amount,
+  DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId,
+] as const;
+
 export type DepositImportValidRow = {
   row: number;
   utr: string;
   amount: number;
+  operatedCurrency: string;
+  operatedAmount: number;
+  exchangeRate: number;
   entryAt?: string;
   settlementAccountType: "bank" | "person";
   bankId?: string;
@@ -1800,10 +1827,12 @@ export type DepositImportInvalidRow = {
   settlementType: string;
   bankAccountNumber: string;
   liablePersonName: string;
-  playerId: string;
-  bonusAmount: string;
-  utr: string;
+  operatedCurrency: string;
   amount: string;
+  exchangeRate: string;
+  platformAmount: string;
+  playerId: string;
+  utr: string;
   errors: string[];
 };
 
@@ -1812,6 +1841,125 @@ export type DepositImportValidationResult = {
   validRows: DepositImportValidRow[];
   invalidRows: DepositImportInvalidRow[];
 };
+
+function parseDepositImportSettlementMode(raw: string): "bank" | "person" {
+  const value = raw.trim().toLowerCase();
+  if (value === "person" || value === "liability person" || value === "liabilityperson") {
+    return "person";
+  }
+  return "bank";
+}
+
+function makeDepositImportInvalidRow(fields: {
+  row: number;
+  dateTime?: string;
+  settlementType?: string;
+  bankAccountNumber?: string;
+  liablePersonName?: string;
+  operatedCurrency?: string;
+  amount?: string;
+  exchangeRate?: string;
+  platformAmount?: string;
+  playerId?: string;
+  utr?: string;
+  errors: string[];
+}): DepositImportInvalidRow {
+  return {
+    row: fields.row,
+    dateTime: fields.dateTime ?? "",
+    settlementType: fields.settlementType ?? "Bank",
+    bankAccountNumber: fields.bankAccountNumber ?? "",
+    liablePersonName: fields.liablePersonName ?? "",
+    operatedCurrency: fields.operatedCurrency ?? "",
+    amount: fields.amount ?? "",
+    exchangeRate: fields.exchangeRate ?? "",
+    platformAmount: fields.platformAmount ?? "",
+    playerId: fields.playerId ?? "",
+    utr: fields.utr ?? "",
+    errors: fields.errors,
+  };
+}
+
+async function resolveDepositImportRowMoney(
+  operatedCurrencyRaw: string,
+  amountRaw: string,
+  platformCurrency: SupportedCurrency,
+  rateCache: Map<string, number | null>,
+): Promise<
+  | {
+      ok: true;
+      operatedCurrency: SupportedCurrency;
+      operatedAmount: number;
+      exchangeRate: number;
+      amount: number;
+    }
+  | { ok: false; errors: string[] }
+> {
+  const errors: string[] = [];
+  if (!amountRaw.trim()) {
+    errors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.amount} is required`);
+    return { ok: false, errors };
+  }
+
+  const rawAmount = Number(amountRaw);
+  if (Number.isNaN(rawAmount)) {
+    errors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.amount} must be a valid number`);
+    return { ok: false, errors };
+  }
+
+  const operatedCurrency = (operatedCurrencyRaw.trim().toUpperCase() || platformCurrency) as string;
+  if (!isSupportedCurrency(operatedCurrency)) {
+    errors.push(`Unsupported currency: ${operatedCurrencyRaw.trim() || operatedCurrency}`);
+    return { ok: false, errors };
+  }
+
+  const minOperated = getCurrencyMinUnit(operatedCurrency);
+  if (rawAmount < minOperated) {
+    errors.push(
+      `${DEPOSIT_IMPORT_CSV_COLUMNS.amount} must be at least ${minOperated} in ${operatedCurrency}`,
+    );
+    return { ok: false, errors };
+  }
+
+  let exchangeRate: number;
+  if (operatedCurrency === platformCurrency) {
+    exchangeRate = 1;
+  } else {
+    let cachedRate = rateCache.get(operatedCurrency);
+    if (cachedRate === undefined) {
+      const master = await resolveMasterExchangeRate(operatedCurrency, platformCurrency);
+      cachedRate = master.rate;
+      rateCache.set(operatedCurrency, cachedRate);
+    }
+    if (cachedRate == null) {
+      errors.push(`No master exchange rate for ${operatedCurrency} → ${platformCurrency}`);
+      return { ok: false, errors };
+    }
+    exchangeRate = cachedRate;
+  }
+
+  try {
+    const money = resolveMoneyInput({
+      operatedAmount: rawAmount,
+      operatedCurrency,
+      exchangeRate,
+      platformCurrency,
+      fieldLabel: DEPOSIT_IMPORT_CSV_COLUMNS.amount,
+      minPlatformAmount: getCurrencyMinUnit(platformCurrency),
+    });
+    return {
+      ok: true,
+      operatedCurrency: money.operatedCurrency,
+      operatedAmount: money.operatedAmount,
+      exchangeRate: money.exchangeRate,
+      amount: money.amount,
+    };
+  } catch (err) {
+    const message = err instanceof AppError ? err.message : "Invalid amount conversion";
+    errors.push(message);
+    return { ok: false, errors };
+  }
+}
 
 function importNormalizeHeaderKey(raw: string): string {
   return String(raw).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -1856,6 +2004,9 @@ export async function validateDepositImportRows(
     throw new AppError("validation_error", "Maximum 10000 rows allowed per import", 400);
   }
 
+  const platformCurrency = await requirePlatformCurrency();
+  const rateCache = new Map<string, number | null>();
+
   const validRows: DepositImportValidRow[] = [];
   const invalidRows: DepositImportInvalidRow[] = [];
   let skipped = 0;
@@ -1870,7 +2021,7 @@ export async function validateDepositImportRows(
     bankIdentifier: string;
     personName: string;
     playerIdRaw: string;
-    bonusAmountRaw: string;
+    operatedCurrencyRaw: string;
     utr: string;
     amountRaw: string;
   }> = [];
@@ -1878,14 +2029,72 @@ export async function validateDepositImportRows(
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const rowNum = i + 2;
-    const utr = importPickCell(row, "utr", "UTR", "transaction_id", "transaction id");
-    const amountRaw = importPickCell(row, "amount", "Amount");
-    const dateTimeValue = importPickRaw(row, "date time", "datetime", "date_time", "entry_at", "entryat", "date");
-    const settlementType = importPickCell(row, "settlement type", "settlement_type", "settlementtype", "type");
-    const bankIdentifier = importPickCell(row, "bank", "bank account number", "bank_account_number", "bankaccountnumber", "account_number", "account number", "accountnumber", "holder name", "holdername", "holder_name", "bank holder", "bankholder");
-    const personName = importPickCell(row, "liable person name", "liable_person_name", "liablepersonname", "person_name", "person name", "personname", "liability person", "liabilityperson");
+    const utr = importPickCell(
+      row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber,
+      "reference number",
+      "referencenumber",
+      "utr",
+      "UTR",
+      "transaction_id",
+      "transaction id",
+    );
+    const amountRaw = importPickCell(row, DEPOSIT_IMPORT_CSV_COLUMNS.amount, "amount");
+    const operatedCurrencyRaw = importPickCell(
+      row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.operatedCurrency,
+      "operated currency",
+      "operatedcurrency",
+      "currency",
+    );
+    const dateTimeValue = importPickRaw(
+      row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.entryDateTime,
+      "date time",
+      "datetime",
+      "date_time",
+      "entry_at",
+      "entryat",
+      "date",
+    );
+    const settlementType = importPickCell(
+      row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.settlement,
+      "settlement type",
+      "settlement_type",
+      "settlementtype",
+      "type",
+    );
+    const bankIdentifier = importPickCell(
+      row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.bank,
+      "bank account number",
+      "bank_account_number",
+      "bankaccountnumber",
+      "account_number",
+      "account number",
+      "accountnumber",
+      "holder name",
+      "holdername",
+      "holder_name",
+      "bank holder",
+      "bankholder",
+    );
+    const personName = importPickCell(
+      row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson,
+      "liable person name",
+      "liable_person_name",
+      "liablepersonname",
+      "person_name",
+      "person name",
+      "personname",
+      "liability person",
+      "liabilityperson",
+    );
     const playerIdRaw = importPickCell(
       row,
+      DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId,
       "trader wallet id",
       "trader id",
       "player id",
@@ -1893,9 +2102,14 @@ export async function validateDepositImportRows(
       "player_id",
       "player",
     );
-    const bonusAmountRaw = importPickCell(row, "bonus amount", "bonusamount", "bonus");
-
-    if (!utr && !amountRaw && !bankIdentifier && !personName && !playerIdRaw && !bonusAmountRaw) {
+    if (
+      !utr &&
+      !amountRaw &&
+      !bankIdentifier &&
+      !personName &&
+      !playerIdRaw &&
+      !operatedCurrencyRaw
+    ) {
       skipped++;
       continue;
     }
@@ -1907,7 +2121,7 @@ export async function validateDepositImportRows(
       bankIdentifier,
       personName,
       playerIdRaw,
-      bonusAmountRaw,
+      operatedCurrencyRaw,
       utr,
       amountRaw,
     });
@@ -1949,33 +2163,33 @@ export async function validateDepositImportRows(
 
   for (const rd of rowDataList) {
     const rowErrors: string[] = [];
-
-    const mode = rd.settlementType.toLowerCase() === "person" ? "person" : "bank";
+    const mode = parseDepositImportSettlementMode(rd.settlementType);
 
     if (!rd.utr) {
-      rowErrors.push("UTR is required");
+      rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} is required`);
     } else if (rd.utr.length < 4) {
-      rowErrors.push("UTR must be at least 4 characters");
+      rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} must be at least 4 characters`);
     } else if (rd.utr.length > 120) {
-      rowErrors.push("UTR must not exceed 120 characters");
+      rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} must not exceed 120 characters`);
     } else {
       const normalized = normalizeUtr(rd.utr);
       if (existingUtrConflicts.has(normalized)) {
-        rowErrors.push("UTR already exists in another transaction");
+        rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} already exists in another transaction`);
       } else if (seenUtrs.has(normalized)) {
-        rowErrors.push("Duplicate UTR within this file");
+        rowErrors.push(`Duplicate ${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} within this file`);
       } else {
         seenUtrs.add(normalized);
       }
     }
 
-    const amt = Number(rd.amountRaw);
-    if (!rd.amountRaw) {
-      rowErrors.push("Amount is required");
-    } else if (Number.isNaN(amt) || amt < 1) {
-      rowErrors.push("Amount must be a number >= 1");
-    } else if (!Number.isInteger(amt)) {
-      rowErrors.push("Amount must be a whole number (no decimals)");
+    const moneyResult = await resolveDepositImportRowMoney(
+      rd.operatedCurrencyRaw,
+      rd.amountRaw,
+      platformCurrency,
+      rateCache,
+    );
+    if (!moneyResult.ok) {
+      rowErrors.push(...moneyResult.errors);
     }
 
     let parsedDate: Date | null = null;
@@ -1995,15 +2209,10 @@ export async function validateDepositImportRows(
     let resolvedBonusAmount: number | undefined;
     let resolvedTotalAmount: number | undefined;
 
-    const hasBonusRaw = rd.bonusAmountRaw.trim() !== "";
     const hasPlayerIdRaw = rd.playerIdRaw.trim() !== "";
 
     if (!hasPlayerIdRaw) {
-      rowErrors.push("Trader Wallet Id is required");
-    }
-
-    if (hasBonusRaw && !hasPlayerIdRaw) {
-      rowErrors.push("Bonus Amount requires a Trader Wallet Id");
+      rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId} is required`);
     }
 
     if (hasPlayerIdRaw) {
@@ -2011,38 +2220,29 @@ export async function validateDepositImportRows(
       const playerResult = exchangePlayerResolutionCache.get(playerKey);
       if (playerResult?.status === "ambiguous") {
         rowErrors.push(
-          `Multiple players found with Trader Wallet Id "${rd.playerIdRaw}". Trader Wallet Id must be unique across exchanges in this file.`,
+          `Multiple players found with ${DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId} "${rd.playerIdRaw}". ${DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId} must be unique across exchanges in this file.`,
         );
       } else if (!playerResult || playerResult.status === "not_found") {
         rowErrors.push(`Player "${rd.playerIdRaw}" not found`);
       } else {
         resolvedPlayerMongoId = playerResult.id;
         resolvedPlayerIdLabel = playerResult.playerIdLabel;
-        if (hasBonusRaw) {
-          const bonus = Number(rd.bonusAmountRaw);
-          if (Number.isNaN(bonus) || bonus < 0) {
-            rowErrors.push("Bonus Amount must be a whole number >= 0");
-          } else if (!Number.isInteger(bonus)) {
-            rowErrors.push("Bonus Amount must be a whole number (no decimals)");
-          } else {
-            resolvedBonusAmount = bonus;
-          }
-        } else {
-          resolvedBonusAmount = 0;
-        }
+        resolvedBonusAmount = 0;
       }
     }
 
     if (mode === "bank") {
       if (!rd.bankIdentifier) {
-        rowErrors.push("Bank (Account No. or Holder Name) is required for Bank settlement");
+        rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.bank} is required for Bank settlement`);
       } else {
         const key = rd.bankIdentifier.trim().toLowerCase();
         const bankResult = bankResolutionCache.get(key);
         if (bankResult?.status === "ambiguous") {
-          rowErrors.push(`Multiple banks found with holder name "${rd.bankIdentifier}". Use account number instead.`);
+          rowErrors.push(
+            `Multiple banks found with holder name "${rd.bankIdentifier}". Use account number instead.`,
+          );
         } else if (!bankResult || bankResult.status === "not_found") {
-          rowErrors.push(`Bank "${rd.bankIdentifier}" not found (tried account number and holder name)`);
+          rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.bank} "${rd.bankIdentifier}" not found (tried account number and holder name)`);
         } else if (bankResult.status === "inactive") {
           rowErrors.push(`Bank "${bankResult.displayName}" is not active`);
         } else {
@@ -2050,45 +2250,56 @@ export async function validateDepositImportRows(
           resolvedBankDisplay = bankResult.displayName;
         }
       }
+    } else if (!rd.personName) {
+      rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson} is required for Liability person settlement`);
     } else {
-      if (!rd.personName) {
-        rowErrors.push("Liable Person Name is required for Person settlement");
+      const key = rd.personName.trim().toLowerCase();
+      const personResult = personResolutionCache.get(key);
+      if (!personResult || personResult.status === "not_found") {
+        rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson} "${rd.personName}" not found`);
+      } else if (personResult.status === "inactive") {
+        rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson} "${personResult.name}" is inactive`);
       } else {
-        const key = rd.personName.trim().toLowerCase();
-        const personResult = personResolutionCache.get(key);
-        if (!personResult || personResult.status === "not_found") {
-          rowErrors.push(`Liability person "${rd.personName}" not found`);
-        } else if (personResult.status === "inactive") {
-          rowErrors.push(`Liability person "${personResult.name}" is inactive`);
-        } else {
-          resolvedPersonId = personResult.id;
-          resolvedPersonName = personResult.name;
-        }
+        resolvedPersonId = personResult.id;
+        resolvedPersonName = personResult.name;
       }
     }
 
-    if (resolvedPlayerMongoId != null && resolvedBonusAmount != null && rowErrors.length === 0) {
-      resolvedTotalAmount = Math.round(amt + resolvedBonusAmount);
+    const platformAmount = moneyResult.ok ? moneyResult.amount : undefined;
+    if (
+      resolvedPlayerMongoId != null &&
+      resolvedBonusAmount != null &&
+      platformAmount != null &&
+      rowErrors.length === 0
+    ) {
+      resolvedTotalAmount = Math.round(platformAmount);
     }
 
     if (rowErrors.length > 0) {
-      invalidRows.push({
-        row: rd.rowNum,
-        dateTime: formatImportDateTimeForDisplay(rd.dateTimeValue),
-        settlementType: rd.settlementType || "Bank",
-        bankAccountNumber: rd.bankIdentifier,
-        liablePersonName: rd.personName,
-        playerId: rd.playerIdRaw,
-        bonusAmount: rd.bonusAmountRaw,
-        utr: rd.utr,
-        amount: rd.amountRaw,
-        errors: rowErrors,
-      });
-    } else {
+      invalidRows.push(
+        makeDepositImportInvalidRow({
+          row: rd.rowNum,
+          dateTime: formatImportDateTimeForDisplay(rd.dateTimeValue),
+          settlementType: rd.settlementType || "Bank",
+          bankAccountNumber: rd.bankIdentifier,
+          liablePersonName: rd.personName,
+          operatedCurrency: rd.operatedCurrencyRaw,
+          amount: rd.amountRaw,
+          exchangeRate: moneyResult.ok ? String(moneyResult.exchangeRate) : "",
+          platformAmount: platformAmount != null ? String(platformAmount) : "",
+          playerId: rd.playerIdRaw,
+          utr: rd.utr,
+          errors: rowErrors,
+        }),
+      );
+    } else if (moneyResult.ok) {
       validRows.push({
         row: rd.rowNum,
         utr: rd.utr,
-        amount: amt,
+        amount: moneyResult.amount,
+        operatedCurrency: moneyResult.operatedCurrency,
+        operatedAmount: moneyResult.operatedAmount,
+        exchangeRate: moneyResult.exchangeRate,
         entryAt: parsedDate ? parsedDate.toISOString() : undefined,
         settlementAccountType: mode,
         bankId: resolvedBankId,
@@ -2119,6 +2330,9 @@ export async function validateDepositImportRows(
 export type DepositImportCommitRow = {
   utr: string;
   amount: number;
+  operatedCurrency: string;
+  operatedAmount: number;
+  exchangeRate: number;
   entryAt?: string;
   settlementAccountType: "bank" | "person";
   bankId?: string;
@@ -2196,11 +2410,33 @@ function buildDepositImportInsertDoc(
   actorOid: Types.ObjectId,
   bankById: Map<string, BankImportLean>,
   personById: Map<string, PersonImportLean>,
+  platformCurrency: SupportedCurrency,
 ): Record<string, unknown> | { error: string; ok?: false } {
+  let money: ReturnType<typeof resolveMoneyInput>;
+  try {
+    money = resolveMoneyInput({
+      operatedAmount: row.operatedAmount,
+      operatedCurrency: row.operatedCurrency,
+      exchangeRate: row.exchangeRate,
+      platformCurrency,
+      fieldLabel: DEPOSIT_IMPORT_CSV_COLUMNS.amount,
+      minPlatformAmount: getCurrencyMinUnit(platformCurrency),
+    });
+  } catch (err) {
+    return { error: err instanceof AppError ? err.message : "Invalid amount conversion" };
+  }
+
+  if (money.amount !== row.amount) {
+    return { error: "Platform amount does not match operated amount and exchange rate" };
+  }
+
   const mode = row.settlementAccountType ?? "bank";
   const base: Record<string, unknown> = {
     utr: normalizeUtr(row.utr),
-    amount: row.amount,
+    amount: money.amount,
+    operatedCurrency: money.operatedCurrency,
+    operatedAmount: money.operatedAmount,
+    exchangeRate: money.exchangeRate,
     status: "pending",
     entryAt: row.entryAt ? parseBusinessDateTime(row.entryAt, "entryAt") : new Date(),
     createdBy: actorOid,
@@ -2213,12 +2449,9 @@ function buildDepositImportInsertDoc(
     if (!Types.ObjectId.isValid(row.playerMongoId)) {
       return { error: "Invalid player reference" };
     }
-    const bonus = Math.round(Number(row.bonusAmount ?? 0));
-    const totalAmount =
-      row.totalAmount != null ? Math.round(row.totalAmount) : Math.round(row.amount + bonus);
     base.player = new Types.ObjectId(row.playerMongoId);
-    base.bonusAmount = bonus;
-    base.totalAmount = totalAmount;
+    base.bonusAmount = 0;
+    base.totalAmount = money.amount;
   }
 
   if (mode === "bank") {
@@ -2262,7 +2495,7 @@ function isMongooseBulkWriteError(err: unknown): err is {
 }
 
 function bulkWriteErrorMessage(writeError: { errmsg?: string; code?: number }): string {
-  if (writeError.code === 11000) return "UTR already exists in another transaction";
+  if (writeError.code === 11000) return "Reference Number already exists in another transaction";
   return writeError.errmsg || "Insert failed";
 }
 
@@ -2281,6 +2514,7 @@ export async function applyDepositImportRows(
   const errors: DepositImportCommitError[] = [];
   const createdIds: string[] = [];
   const jobUtrSet = new Set<string>();
+  const platformCurrency = await requirePlatformCurrency();
 
   const indexedRows: IndexedDepositImportRow[] = rows.map((row, index) => ({ index, row }));
   const { bankById, personById } = await loadDepositImportLookups(rows);
@@ -2299,7 +2533,7 @@ export async function applyDepositImportRows(
         errors.push({
           row: item.index + 1,
           utr: item.row.utr,
-          error: "UTR already exists in another transaction",
+          error: "Reference Number already exists in another transaction",
         });
         continue;
       }
@@ -2309,7 +2543,7 @@ export async function applyDepositImportRows(
         continue;
       }
 
-      const built = buildDepositImportInsertDoc(item.row, actorOid, bankById, personById);
+      const built = buildDepositImportInsertDoc(item.row, actorOid, bankById, personById, platformCurrency);
       if ("error" in built && typeof built.error === "string") {
         errors.push({ row: item.index + 1, utr: item.row.utr, error: built.error });
         continue;
@@ -2440,58 +2674,56 @@ export type DepositImportCommitProgress = {
   errors: Array<{ row: number; utr: string; error: string }>;
 };
 
-const DEPOSIT_IMPORT_SAMPLE_COLUMNS = [
-  "Date Time",
-  "Settlement Type",
-  "Bank",
-  "Liable Person Name",
-  "Trader Wallet Id",
-  "Bonus Amount",
-  "UTR",
-  "Amount",
-] as const;
+const DEPOSIT_IMPORT_SAMPLE_COLUMNS = DEPOSIT_IMPORT_CSV_HEADER_LIST;
 
-export function getDepositImportSampleRows(): Array<Record<string, string>> {
+export async function getDepositImportSampleRows(): Promise<Array<Record<string, string>>> {
+  let platformCurrency = "INR";
+  try {
+    platformCurrency = await requirePlatformCurrency();
+  } catch {
+    // Template fallback when platform currency is not configured yet.
+  }
+
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const todayStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const dateAtTen = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} 10:00`;
   return [
     {
-      "Date Time": todayStr,
-      "Settlement Type": "Bank",
-      Bank: "1234567890",
-      "Liable Person Name": "",
-      "Trader Wallet Id": "PLAYER001",
-      "Bonus Amount": "500",
-      UTR: "TXN001ABC",
-      Amount: "5000",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.entryDateTime]: todayStr,
+      [DEPOSIT_IMPORT_CSV_COLUMNS.settlement]: "Bank",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.bank]: "1234567890",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson]: "",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber]: "TXN001ABC",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.operatedCurrency]: "",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.amount]: "5000",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId]: "PLAYER001",
     },
     {
-      "Date Time": "",
-      "Settlement Type": "",
-      Bank: "Rajesh Kumar",
-      "Liable Person Name": "",
-      "Trader Wallet Id": "PLAYER002",
-      "Bonus Amount": "0",
-      UTR: "TXN002DEF",
-      Amount: "3000",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.entryDateTime]: "",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.settlement]: "Bank",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.bank]: "Rajesh Kumar",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson]: "",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber]: "TXN002DEF",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.operatedCurrency]: "USD",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.amount]: "100",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId]: "PLAYER002",
     },
     {
-      "Date Time": dateAtTen,
-      "Settlement Type": "Person",
-      Bank: "",
-      "Liable Person Name": "John Doe",
-      "Trader Wallet Id": "PLAYER003",
-      "Bonus Amount": "100",
-      UTR: "TXN003GHI",
-      Amount: "2500",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.entryDateTime]: dateAtTen,
+      [DEPOSIT_IMPORT_CSV_COLUMNS.settlement]: "Liability person",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.bank]: "",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.liabilityPerson]: "John Doe",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber]: "TXN003GHI",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.operatedCurrency]: platformCurrency,
+      [DEPOSIT_IMPORT_CSV_COLUMNS.amount]: "2500",
+      [DEPOSIT_IMPORT_CSV_COLUMNS.traderWalletId]: "PLAYER003",
     },
   ];
 }
 
-export function buildDepositImportSampleCsv(): Buffer {
-  const rows = getDepositImportSampleRows();
+export async function buildDepositImportSampleCsv(): Promise<Buffer> {
+  const rows = await getDepositImportSampleRows();
   const header = DEPOSIT_IMPORT_SAMPLE_COLUMNS.join(",");
   const lines = rows.map((row) =>
     DEPOSIT_IMPORT_SAMPLE_COLUMNS.map((col) => row[col] ?? "").join(","),
@@ -2499,8 +2731,8 @@ export function buildDepositImportSampleCsv(): Buffer {
   return Buffer.from([header, ...lines].join("\n"), "utf-8");
 }
 
-export function buildDepositImportSampleXlsx(): Buffer {
-  const rows = getDepositImportSampleRows();
+export async function buildDepositImportSampleXlsx(): Promise<Buffer> {
+  const rows = await getDepositImportSampleRows();
   const worksheet = xlsx.utils.json_to_sheet(rows);
   const ref = worksheet["!ref"];
   if (ref) {
@@ -2519,8 +2751,13 @@ export function buildDepositImportSampleXlsx(): Buffer {
 }
 
 export function buildDepositImportErrorCsv(invalidRows: DepositImportInvalidRow[]): Buffer {
-  const header =
-    "Row,Date Time,Settlement Type,Bank,Liable Person Name,Trader Wallet Id,Bonus Amount,UTR,Amount,Error";
+  const header = [
+    "Row",
+    ...DEPOSIT_IMPORT_CSV_HEADER_LIST,
+    "Exchange rate",
+    "Platform amount",
+    "Error",
+  ].join(",");
   const lines = [header];
   for (const r of invalidRows) {
     lines.push(
@@ -2530,10 +2767,12 @@ export function buildDepositImportErrorCsv(invalidRows: DepositImportInvalidRow[
         quoteCsvVal(r.settlementType),
         quoteCsvVal(r.bankAccountNumber),
         quoteCsvVal(r.liablePersonName),
-        quoteCsvVal(r.playerId),
-        quoteCsvVal(r.bonusAmount),
         quoteCsvVal(r.utr),
+        quoteCsvVal(r.operatedCurrency),
         quoteCsvVal(r.amount),
+        quoteCsvVal(r.playerId),
+        quoteCsvVal(r.exchangeRate),
+        quoteCsvVal(r.platformAmount),
         quoteCsvVal(r.errors.join("; ")),
       ].join(","),
     );

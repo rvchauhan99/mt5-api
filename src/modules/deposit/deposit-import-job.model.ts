@@ -5,6 +5,9 @@ export type DepositImportJobStatus = "queued" | "processing" | "completed" | "fa
 export interface DepositImportJobInputRow {
   utr: string;
   amount: number;
+  operatedCurrency: string;
+  operatedAmount: number;
+  exchangeRate: number;
   entryAt?: string;
   settlementAccountType: "bank" | "person";
   bankId?: string;
@@ -52,6 +55,9 @@ const rowSchema = new Schema<DepositImportJobInputRow>(
   {
     utr: { type: String, required: true, trim: true },
     amount: { type: Number, required: true, min: 1 },
+    operatedCurrency: { type: String, required: true, trim: true },
+    operatedAmount: { type: Number, required: true, min: 0 },
+    exchangeRate: { type: Number, required: true, min: 0 },
     entryAt: { type: String, required: false },
     settlementAccountType: { type: String, enum: ["bank", "person"], required: true, default: "bank" },
     bankId: { type: String, required: false },

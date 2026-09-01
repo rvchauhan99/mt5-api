@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SUPPORTED_CURRENCIES } from "../../shared/constants/currencies";
 import { moneyFxInputSchema } from "../../shared/validation/moneyFx.validation";
 
 const optionalDateTime = z.preprocess(
@@ -142,6 +143,9 @@ export const amendDepositBodySchema = z.object({
 const depositImportRowSchema = z.object({
   utr: z.string().min(4).max(120),
   amount: z.number().positive(),
+  operatedCurrency: z.enum(SUPPORTED_CURRENCIES),
+  operatedAmount: z.number().min(0),
+  exchangeRate: z.number().positive(),
   entryAt: z.string().optional(),
   settlementAccountType: z.enum(["bank", "person"]).default("bank"),
   bankId: z.string().length(24).optional(),
@@ -149,7 +153,7 @@ const depositImportRowSchema = z.object({
   playerMongoId: z.string().length(24),
   bonusAmount: z.number().min(0),
   totalAmount: z.number().positive().optional(),
-}).merge(moneyFxInputSchema);
+});
 
 export const commitDepositImportBodySchema = z.object({
   rows: z.array(depositImportRowSchema).min(1).max(500),

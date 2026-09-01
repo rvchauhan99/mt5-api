@@ -37,4 +37,6 @@ const bankSchema = new Schema<BankDocument>(
   { timestamps: true },
 );
 
+bankSchema.index({ method: 1 }, { unique: true, sparse: true });
+
 export const BankModel = model<BankDocument>("Bank", bankSchema);

@@ -154,12 +154,13 @@ export async function streamDepositApprovalQueueEventsController(req: Request, r
 export async function sampleDepositCsvController(req: Request, res: Response) {
   const format = String(req.query.format ?? "csv").toLowerCase();
   if (format === "xlsx") {
-    const buffer = buildDepositImportSampleXlsx();
+    const buffer = await buildDepositImportSampleXlsx();
     res.setHeader("Content-Disposition", 'attachment; filename="deposit-import-sample.xlsx"');
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
+    res.setHeader("Cache-Control", "no-store");
     res.status(StatusCodes.OK).send(buffer);
     return;
   }
@@ -170,9 +171,10 @@ export async function sampleDepositCsvController(req: Request, res: Response) {
     });
     return;
   }
-  const buffer = buildDepositImportSampleCsv();
+  const buffer = await buildDepositImportSampleCsv();
   res.setHeader("Content-Disposition", 'attachment; filename="deposit-import-sample.csv"');
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
   res.status(StatusCodes.OK).send(buffer);
 }
 

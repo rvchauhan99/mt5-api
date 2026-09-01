@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SUPPORTED_CURRENCIES } from "../../shared/constants/currencies";
 import { moneyFxInputSchema } from "../../shared/validation/moneyFx.validation";
 
 const optionalDateTime = z.preprocess(
@@ -147,6 +148,9 @@ const withdrawalImportRowSchema = z
     bankName: z.string().min(1).max(120),
     ifsc: z.string().min(4).max(20),
     amount: z.number().positive(),
+    operatedCurrency: z.enum(SUPPORTED_CURRENCIES),
+    operatedAmount: z.number().min(0),
+    exchangeRate: z.number().positive(),
     reverseBonus: z.number().min(0).optional().default(0),
     requestedAt: z.string().optional(),
     payoutUtr: z.string().min(4).max(120),

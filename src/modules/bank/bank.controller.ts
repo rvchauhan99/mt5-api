@@ -18,8 +18,12 @@ import {
 import { resolveRequestTimeZone } from "../../shared/utils/requestTimezone";
 
 export async function createBankController(req: Request, res: Response) {
-  const data = await createBank(req.body, req.user!.userId, req.requestId);
-  res.status(StatusCodes.CREATED).json({ success: true, data });
+  const { doc, created } = await createBank(req.body, req.user!.userId, req.requestId);
+  res.status(created ? StatusCodes.CREATED : StatusCodes.OK).json({
+    success: true,
+    data: doc,
+    meta: created ? { created: true } : { created: false, updated: true },
+  });
 }
 
 export async function listBankController(req: Request, res: Response) {

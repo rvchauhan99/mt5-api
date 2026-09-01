@@ -16,7 +16,7 @@ import {
   ymdToUtcEnd,
   ymdToUtcStart,
 } from "../../shared/utils/timezone";
-import { BankModel } from "./bank.model";
+import { BankModel, type BankDocument } from "./bank.model";
 import { BankBalanceSettlementModel } from "./bank-balance-settlement.model";
 import { computeClosingBalanceActualByBankIds } from "./bankClosingBalance";
 import { listBankQuerySchema } from "./bank.validation";
@@ -303,23 +303,70 @@ export async function createBank(input: {
   openingOperatedCurrency?: string;
   openingOperatedAmount?: number;
   openingExchangeRate?: number;
-}, actorId: string, requestId?: string) {
+}, actorId: string, requestId?: string): Promise<{ doc: BankDocument; created: boolean }> {
   const resolved = await resolvePaymentMethod(input.method);
   const method = resolved.code;
   const defaultLabel = resolved.label;
   const holderName = (input.name || input.holderName || defaultLabel).trim();
   const bankName = (input.bankName || defaultLabel).trim();
-  const accountNumber = (input.accountNumber || generateAccountNumber(method)).trim();
-  const ifsc = (input.ifsc || "N/A").trim();
 
-  const existing = await BankModel.findOne({ accountNumber });
-  if (existing) throw new AppError("business_rule_error", "Account number already exists", 409);
   const opening = await resolveOpeningMoneyFromRequest({
     openingBalance: input.openingBalance,
     openingOperatedCurrency: input.openingOperatedCurrency,
     openingOperatedAmount: input.openingOperatedAmount,
     openingExchangeRate: input.openingExchangeRate,
   });
+
+  const existingByMethod = await BankModel.findOne({ method }).sort({ createdAt: 1 });
+  if (existingByMethod) {
+    const oldValue = {
+      method: existingByMethod.method,
+      holderName: existingByMethod.holderName,
+      bankName: existingByMethod.bankName,
+      openingBalance: existingByMethod.openingBalance,
+      openingOperatedCurrency: existingByMethod.openingOperatedCurrency,
+      openingOperatedAmount: existingByMethod.openingOperatedAmount,
+      openingExchangeRate: existingByMethod.openingExchangeRate,
+      status: existingByMethod.status,
+    };
+
+    existingByMethod.holderName = holderName;
+    existingByMethod.bankName = bankName;
+    existingByMethod.openingBalance = opening.openingBalance;
+    existingByMethod.openingOperatedCurrency = opening.openingOperatedCurrency;
+    existingByMethod.openingOperatedAmount = opening.openingOperatedAmount;
+    existingByMethod.openingExchangeRate = opening.openingExchangeRate;
+    existingByMethod.status = input.status;
+    await existingByMethod.save();
+
+    await createAuditLog({
+      actorId,
+      action: "bank.update",
+      entity: "bank",
+      entityId: existingByMethod._id.toString(),
+      oldValue: oldValue as unknown as Record<string, unknown>,
+      newValue: {
+        method: existingByMethod.method,
+        holderName: existingByMethod.holderName,
+        bankName: existingByMethod.bankName,
+        openingBalance: existingByMethod.openingBalance,
+        openingOperatedCurrency: existingByMethod.openingOperatedCurrency,
+        openingOperatedAmount: existingByMethod.openingOperatedAmount,
+        openingExchangeRate: existingByMethod.openingExchangeRate,
+        status: existingByMethod.status,
+      } as unknown as Record<string, unknown>,
+      requestId,
+    });
+    await invalidateCacheDomains(["bank"]);
+    return { doc: existingByMethod, created: false };
+  }
+
+  const accountNumber = (input.accountNumber || generateAccountNumber(method)).trim();
+  const ifsc = (input.ifsc || "N/A").trim();
+
+  const existing = await BankModel.findOne({ accountNumber });
+  if (existing) throw new AppError("business_rule_error", "Account number already exists", 409);
+
   const doc = await BankModel.create({
     method,
     holderName,
@@ -354,7 +401,7 @@ export async function createBank(input: {
     requestId,
   });
   await invalidateCacheDomains(["bank"]);
-  return doc;
+  return { doc, created: true };
 }
 
 export async function listBanks(query: ListBankQuery, options?: { timeZone?: string }) {
