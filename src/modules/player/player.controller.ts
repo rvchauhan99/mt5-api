@@ -79,6 +79,7 @@ export async function samplePlayerCsvController(_req: Request, res: Response) {
   const buffer = getSampleCsvBuffer();
   res.setHeader("Content-Disposition", 'attachment; filename="traders-sample.csv"');
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
   res.status(StatusCodes.OK).send(buffer);
 }
 

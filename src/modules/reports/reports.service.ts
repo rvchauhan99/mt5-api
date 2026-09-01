@@ -1622,7 +1622,7 @@ export async function exportDashboardSummaryToBuffer(
 
   const ibTopData = data.ibTopPerformers.map((row, index) => ({
     Rank: index + 1,
-    "IB Player Id": row.playerId,
+    "IB Trader Wallet Id": row.playerId,
     Phone: row.phone,
     "Commission Amount": row.totalAmount,
     Accruals: row.count,
@@ -1660,7 +1660,7 @@ export async function exportDashboardSummaryToBuffer(
       data: ibTopData,
       columns: [
         { header: "Rank", key: "Rank" },
-        { header: "IB Player Id", key: "IB Player Id" },
+        { header: "IB Trader Wallet Id", key: "IB Trader Wallet Id" },
         { header: "Phone", key: "Phone" },
         { header: "Commission Amount", key: "Commission Amount" },
         { header: "Accruals", key: "Accruals" },

@@ -267,7 +267,15 @@ export async function validateWithdrawalImportRows(
         },
       });
     }
-    const playerIdRaw = withdrawalImportPickCell(row, "player id", "playerid", "player_id", "player");
+    const playerIdRaw = withdrawalImportPickCell(
+      row,
+      "trader wallet id",
+      "trader id",
+      "player id",
+      "playerid",
+      "player_id",
+      "player",
+    );
     const accountNumberRaw = withdrawalImportPickCell(
       row,
       "account number",
@@ -441,7 +449,7 @@ export async function validateWithdrawalImportRows(
   for (const rd of rowDataList) {
     const rowErrors: string[] = [];
 
-    if (!rd.playerIdRaw) rowErrors.push("Player Id is required");
+    if (!rd.playerIdRaw) rowErrors.push("Trader Wallet Id is required");
     if (rd.accountNumberNotationError) rowErrors.push(rd.accountNumberNotationError);
     if (!rd.accountNumber) rowErrors.push("Account Number is required");
     else if (rd.accountNumber.length > 40) rowErrors.push("Account Number must not exceed 40 characters");
@@ -478,7 +486,7 @@ export async function validateWithdrawalImportRows(
       const playerResult = exchangePlayerResolutionCache.get(playerKey);
       if (playerResult?.status === "ambiguous") {
         rowErrors.push(
-          `Multiple players found with Player Id "${rd.playerIdRaw}". Player Id must be unique across exchanges in this file.`,
+          `Multiple players found with Trader Wallet Id "${rd.playerIdRaw}". Trader Wallet Id must be unique across exchanges in this file.`,
         );
       } else if (!playerResult || playerResult.status === "not_found") {
         rowErrors.push(`Player "${rd.playerIdRaw}" not found`);
@@ -958,7 +966,7 @@ export async function commitWithdrawalImportRows(
 
 const WITHDRAWAL_IMPORT_SAMPLE_COLUMNS = [
   "Date Time",
-  "Player Id",
+  "Trader Wallet Id",
   "Account Number",
   "Account Holder Name",
   "Bank Name",
@@ -978,7 +986,7 @@ export function getWithdrawalImportSampleRows(): Array<Record<string, string>> {
   return [
     {
       "Date Time": todayStr,
-      "Player Id": "PLAYER001",
+      "Trader Wallet Id": "PLAYER001",
       "Account Number": "123456789012",
       "Account Holder Name": "John Doe",
       "Bank Name": "HDFC Bank",
@@ -992,7 +1000,7 @@ export function getWithdrawalImportSampleRows(): Array<Record<string, string>> {
     },
     {
       "Date Time": "",
-      "Player Id": "PLAYER002",
+      "Trader Wallet Id": "PLAYER002",
       "Account Number": "987654321098",
       "Account Holder Name": "Jane Smith",
       "Bank Name": "ICICI Bank",
@@ -1035,7 +1043,7 @@ export function buildWithdrawalImportSampleXlsx(): Buffer {
 
 export function buildWithdrawalImportErrorCsv(invalidRows: WithdrawalImportInvalidRow[]): Buffer {
   const header =
-    "Row,Date Time,Player Id,Account Number,Account Holder Name,Bank Name,IFSC,Amount,Reverse Bonus,Payout UTR,Payout Settlement Type,Payout Bank,Payout Liable Person Name,Error";
+    "Row,Date Time,Trader Wallet Id,Account Number,Account Holder Name,Bank Name,IFSC,Amount,Reverse Bonus,Payout UTR,Payout Settlement Type,Payout Bank,Payout Liable Person Name,Error";
   const lines = [header];
   for (const r of invalidRows) {
     lines.push(

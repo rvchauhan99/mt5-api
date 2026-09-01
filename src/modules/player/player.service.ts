@@ -336,7 +336,7 @@ export async function createPlayer(
   } catch (err: unknown) {
     const code = err && typeof err === "object" && "code" in err ? (err as { code?: number }).code : undefined;
     if (code === 11000) {
-      throw new AppError("business_rule_error", "Player ID already exists for this exchange", 409);
+      throw new AppError("business_rule_error", "Trader Wallet Id already exists for this exchange", 409);
     }
     throw err;
   }
@@ -344,7 +344,7 @@ export async function createPlayer(
 
 export async function getPlayerById(id: string) {
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new AppError("validation_error", "Invalid player id", 400);
+    throw new AppError("validation_error", "Invalid Trader Wallet Id", 400);
   }
   const doc = await PlayerModel.findById(id)
     .select(
@@ -378,7 +378,7 @@ export async function updatePlayer(
   requestId?: string,
 ) {
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new AppError("validation_error", "Invalid player id", 400);
+    throw new AppError("validation_error", "Invalid Trader Wallet Id", 400);
   }
   const doc = await PlayerModel.findById(id);
   if (!doc) {
@@ -547,7 +547,7 @@ export async function exportPlayersToBuffer(
     return {
       "Exchange Name": ex?.name ?? "",
       Provider: ex?.provider ?? "",
-      "Player Id": r.playerId,
+      "Trader Wallet Id": r.playerId,
       Phone: r.phone,
       Email: r.email ?? "",
       "User Type": r.userType === "ib" ? "IB" : "Trader",
@@ -570,11 +570,11 @@ export async function exportPlayersToBuffer(
 /** CSV column headers — match Trader / Add form labels. */
 export const PLAYER_IMPORT_CSV_COLUMNS = {
   exchange: "Exchange",
-  traderId: "Trader Id",
+  traderId: "Trader Wallet Id",
   phoneNumber: "Phone Number",
   emailId: "Email ID",
   userType: "User type",
-  ib: "IB",
+  ib: "IB Trader Wallet Id",
   referralPercentageForIb: "Referral Percentage for IB",
 } as const;
 
@@ -924,6 +924,7 @@ export async function parsePlayerImportFile(
       "playerid",
       "player id",
       "trader id",
+      "trader wallet id",
     );
     const phone = pickCell(
       row,
@@ -955,6 +956,7 @@ export async function parsePlayerImportFile(
       "ib id",
       "ib_player",
       "ib trader id",
+      "ib trader wallet id",
     );
     const referralPercentageRaw = pickCellRaw(
       row,
@@ -1161,7 +1163,7 @@ export async function parsePlayerImportFile(
   if (parsedRows.length === 0) {
     throw new AppError(
       "validation_error",
-      "No data rows to import. Add at least one row with Exchange, Trader Id, and Phone Number.",
+      `No data rows to import. Add at least one row with ${PLAYER_IMPORT_CSV_COLUMNS.exchange}, ${PLAYER_IMPORT_CSV_COLUMNS.traderId}, and ${PLAYER_IMPORT_CSV_COLUMNS.phoneNumber}.`,
       400,
     );
   }

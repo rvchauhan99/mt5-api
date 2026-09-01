@@ -1884,7 +1884,15 @@ export async function validateDepositImportRows(
     const settlementType = importPickCell(row, "settlement type", "settlement_type", "settlementtype", "type");
     const bankIdentifier = importPickCell(row, "bank", "bank account number", "bank_account_number", "bankaccountnumber", "account_number", "account number", "accountnumber", "holder name", "holdername", "holder_name", "bank holder", "bankholder");
     const personName = importPickCell(row, "liable person name", "liable_person_name", "liablepersonname", "person_name", "person name", "personname", "liability person", "liabilityperson");
-    const playerIdRaw = importPickCell(row, "player id", "playerid", "player_id", "player");
+    const playerIdRaw = importPickCell(
+      row,
+      "trader wallet id",
+      "trader id",
+      "player id",
+      "playerid",
+      "player_id",
+      "player",
+    );
     const bonusAmountRaw = importPickCell(row, "bonus amount", "bonusamount", "bonus");
 
     if (!utr && !amountRaw && !bankIdentifier && !personName && !playerIdRaw && !bonusAmountRaw) {
@@ -1991,11 +1999,11 @@ export async function validateDepositImportRows(
     const hasPlayerIdRaw = rd.playerIdRaw.trim() !== "";
 
     if (!hasPlayerIdRaw) {
-      rowErrors.push("Player Id is required");
+      rowErrors.push("Trader Wallet Id is required");
     }
 
     if (hasBonusRaw && !hasPlayerIdRaw) {
-      rowErrors.push("Bonus Amount requires a Player Id");
+      rowErrors.push("Bonus Amount requires a Trader Wallet Id");
     }
 
     if (hasPlayerIdRaw) {
@@ -2003,7 +2011,7 @@ export async function validateDepositImportRows(
       const playerResult = exchangePlayerResolutionCache.get(playerKey);
       if (playerResult?.status === "ambiguous") {
         rowErrors.push(
-          `Multiple players found with Player Id "${rd.playerIdRaw}". Player Id must be unique across exchanges in this file.`,
+          `Multiple players found with Trader Wallet Id "${rd.playerIdRaw}". Trader Wallet Id must be unique across exchanges in this file.`,
         );
       } else if (!playerResult || playerResult.status === "not_found") {
         rowErrors.push(`Player "${rd.playerIdRaw}" not found`);
@@ -2437,7 +2445,7 @@ const DEPOSIT_IMPORT_SAMPLE_COLUMNS = [
   "Settlement Type",
   "Bank",
   "Liable Person Name",
-  "Player Id",
+  "Trader Wallet Id",
   "Bonus Amount",
   "UTR",
   "Amount",
@@ -2454,7 +2462,7 @@ export function getDepositImportSampleRows(): Array<Record<string, string>> {
       "Settlement Type": "Bank",
       Bank: "1234567890",
       "Liable Person Name": "",
-      "Player Id": "PLAYER001",
+      "Trader Wallet Id": "PLAYER001",
       "Bonus Amount": "500",
       UTR: "TXN001ABC",
       Amount: "5000",
@@ -2464,7 +2472,7 @@ export function getDepositImportSampleRows(): Array<Record<string, string>> {
       "Settlement Type": "",
       Bank: "Rajesh Kumar",
       "Liable Person Name": "",
-      "Player Id": "PLAYER002",
+      "Trader Wallet Id": "PLAYER002",
       "Bonus Amount": "0",
       UTR: "TXN002DEF",
       Amount: "3000",
@@ -2474,7 +2482,7 @@ export function getDepositImportSampleRows(): Array<Record<string, string>> {
       "Settlement Type": "Person",
       Bank: "",
       "Liable Person Name": "John Doe",
-      "Player Id": "PLAYER003",
+      "Trader Wallet Id": "PLAYER003",
       "Bonus Amount": "100",
       UTR: "TXN003GHI",
       Amount: "2500",
@@ -2512,7 +2520,7 @@ export function buildDepositImportSampleXlsx(): Buffer {
 
 export function buildDepositImportErrorCsv(invalidRows: DepositImportInvalidRow[]): Buffer {
   const header =
-    "Row,Date Time,Settlement Type,Bank,Liable Person Name,Player Id,Bonus Amount,UTR,Amount,Error";
+    "Row,Date Time,Settlement Type,Bank,Liable Person Name,Trader Wallet Id,Bonus Amount,UTR,Amount,Error";
   const lines = [header];
   for (const r of invalidRows) {
     lines.push(

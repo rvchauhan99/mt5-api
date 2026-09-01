@@ -1016,7 +1016,7 @@ export async function updateWithdrawalStatus(
 
 export async function listSavedAccountsForPlayer(playerId: string) {
   if (!Types.ObjectId.isValid(playerId)) {
-    throw new AppError("validation_error", "Invalid player id", 400);
+    throw new AppError("validation_error", "Invalid Trader Wallet Id", 400);
   }
   const rows = await WithdrawalModel.find({
     player: new Types.ObjectId(playerId),
@@ -1073,7 +1073,7 @@ export async function exportWithdrawalsToBuffer(
     .lean();
 
   return generateExcelBuffer(rows, [
-    { header: "Player ID", transform: (r) => (r.player as any)?.playerId ?? "" },
+    { header: "Trader Wallet Id", transform: (r) => (r.player as any)?.playerId ?? "" },
     { header: "Player Phone", transform: (r) => (r.player as any)?.phone ?? "" },
     { header: "Account Number", key: "accountNumber" },
     { header: "Account Holder", key: "accountHolderName" },
