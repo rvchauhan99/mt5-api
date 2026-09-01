@@ -2,8 +2,9 @@ import type { Model } from "mongoose";
 import { ReasonModel } from "./reason.model";
 import { ExpenseTypeModel } from "./expense-type.model";
 import { ExchangeRateModel } from "./exchange-rate.model";
+import { PaymentMethodModel } from "./payment-method.model";
 
-export const MASTER_MODEL_KEYS = ["reason", "expenseType", "exchangeRate"] as const;
+export const MASTER_MODEL_KEYS = ["reason", "expenseType", "exchangeRate", "paymentMethod"] as const;
 export type MasterModelKey = (typeof MASTER_MODEL_KEYS)[number];
 
 export type MasterRegistryEntry = {
@@ -33,12 +34,19 @@ export const MASTERS_REGISTRY: MasterRegistryEntry[] = [
     modelKey: "exchangeRate",
     required_fields: ["fromCurrency", "toCurrency", "rate"],
   },
+  {
+    id: 4,
+    name: "Payment Method",
+    modelKey: "paymentMethod",
+    required_fields: ["name"],
+  },
 ];
 
 const MODEL_MAP: Record<MasterModelKey, Model<unknown>> = {
   reason: ReasonModel,
   expenseType: ExpenseTypeModel,
   exchangeRate: ExchangeRateModel,
+  paymentMethod: PaymentMethodModel,
 };
 
 export function getMasterModel(modelKey: string): Model<unknown> | null {

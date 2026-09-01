@@ -2,9 +2,11 @@ import { BankModel } from "../bank/bank.model";
 import { ExchangeModel } from "../exchange/exchange.model";
 import { PlayerModel } from "../player/player.model";
 import { ExpenseTypeModel } from "../masters/expense-type.model";
+import { PaymentMethodModel } from "../masters/payment-method.model";
 import { Types } from "mongoose";
 import { AppError } from "../../shared/errors/AppError";
 import { getCachedJson, getCacheVersion, setCachedJson } from "../../shared/cache/cache.service";
+import { bankDisplayName, toMethodCode } from "../bank/bank.constants";
 
 export type LookupQueryParams = {
   q?: string;
@@ -23,7 +25,7 @@ function stableLookupKey(prefix: string, payload: Record<string, unknown>, versi
 
 export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
   const version = await getCacheVersion("bank");
-  const cacheKey = stableLookupKey("bank", { q: q ?? "", limit }, version);
+  const cacheKey = stableLookupKey("bank-v4", { q: q ?? "", limit }, version);
   const cached = await getCachedJson<any[]>(cacheKey);
   if (cached) return cached;
   const qTrim = q?.trim();
@@ -35,17 +37,44 @@ export async function listBankLookupOptions({ q, limit }: LookupQueryParams) {
       { bankName: { $regex: esc, $options: "i" } },
       { accountNumber: { $regex: esc, $options: "i" } },
       { ifsc: { $regex: esc, $options: "i" } },
+      { method: { $regex: esc, $options: "i" } },
     ];
   }
   const rows = await BankModel.find(filter)
     .sort({ holderName: 1, bankName: 1 })
     .limit(limit)
-    .select({ holderName: 1, bankName: 1, accountNumber: 1 })
+    .select({ method: 1, holderName: 1, bankName: 1, accountNumber: 1 })
     .lean()
     .exec();
+  const methodCodes = [...new Set(rows.map((row) => toMethodCode(String(row.method ?? ""))).filter(Boolean))];
+  const methodRows = methodCodes.length
+    ? await PaymentMethodModel.find({
+        code: { $in: methodCodes },
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+      })
+        .select({ code: 1, isActive: 1, isActiveForWithdrawalPayout: 1, isActiveForDeposit: 1 })
+        .lean()
+        .exec()
+    : [];
+  const methodConfigByCode = new Map(
+    methodRows.map((row) => [
+      String(row.code ?? "").trim(),
+      {
+        isActive: row.isActive !== false,
+        isActiveForWithdrawalPayout: row.isActiveForWithdrawalPayout !== false,
+        isActiveForDeposit: row.isActiveForDeposit !== false,
+      },
+    ]),
+  );
   const data = rows.map((row) => ({
+    ...(methodConfigByCode.get(toMethodCode(String(row.method ?? ""))) ?? {
+      isActive: true,
+      isActiveForWithdrawalPayout: true,
+      isActiveForDeposit: true,
+    }),
     id: String(row._id),
-    label: `${row.holderName} - ${row.bankName} (${String(row.accountNumber || "").slice(-4)})`,
+    label: bankDisplayName(row),
+    method: row.method != null ? String(row.method) : undefined,
     holderName: String(row.holderName ?? ""),
     bankName: String(row.bankName ?? ""),
     accountNumber: String(row.accountNumber ?? ""),
@@ -122,6 +151,79 @@ export async function listExpenseTypeLookupOptions({ q, limit, id }: LookupQuery
     .lean()
     .exec();
   const data = rows.map((row) => mapExpenseTypeLookupRow(row as ExpenseTypeLookupLean));
+  await setCachedJson(cacheKey, data, 60 * 10);
+  return data;
+}
+
+type PaymentMethodLookupLean = {
+  _id: unknown;
+  name?: unknown;
+  code?: unknown;
+  description?: unknown;
+  isActiveForWithdrawalPayout?: boolean;
+  isActiveForDeposit?: boolean;
+};
+
+function mapPaymentMethodLookupRow(row: PaymentMethodLookupLean) {
+  const name = String(row.name ?? "").trim();
+  const code = row.code != null && String(row.code).trim() !== "" ? String(row.code).trim() : toMethodCode(name);
+  return {
+    id: String(row._id),
+    label: name || code,
+    name,
+    code,
+    description: row.description != null ? String(row.description) : undefined,
+    isActiveForWithdrawalPayout: row.isActiveForWithdrawalPayout !== false,
+    isActiveForDeposit: row.isActiveForDeposit !== false,
+  };
+}
+
+export async function listPaymentMethodLookupOptions({ q, limit, id }: LookupQueryParams) {
+  const version = await getCacheVersion("paymentMethod");
+  const idTrim = id?.trim();
+  if (idTrim && Types.ObjectId.isValid(idTrim)) {
+    const row = await PaymentMethodModel.findOne({
+      _id: new Types.ObjectId(idTrim),
+      isActive: true,
+      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+    })
+      .select({ name: 1, code: 1, description: 1, isActiveForWithdrawalPayout: 1, isActiveForDeposit: 1 })
+      .lean()
+      .exec();
+    if (!row) return [];
+    return [mapPaymentMethodLookupRow(row as PaymentMethodLookupLean)];
+  }
+
+  const cacheKey = stableLookupKey("paymentMethod", { q: q ?? "", id: "", limit }, version);
+  const cached = await getCachedJson<ReturnType<typeof mapPaymentMethodLookupRow>[]>(cacheKey);
+  if (cached) return cached;
+
+  const qTrim = q?.trim();
+  const filter: Record<string, unknown> = {
+    isActive: true,
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+  };
+  if (qTrim) {
+    const esc = escapeRegex(qTrim);
+    filter.$and = [
+      { $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }] },
+      {
+        $or: [
+          { name: { $regex: esc, $options: "i" } },
+          { code: { $regex: esc, $options: "i" } },
+          { description: { $regex: esc, $options: "i" } },
+        ],
+      },
+    ];
+    delete filter.$or;
+  }
+  const rows = await PaymentMethodModel.find(filter)
+    .sort({ name: 1 })
+    .limit(limit)
+    .select({ name: 1, code: 1, description: 1, isActiveForWithdrawalPayout: 1, isActiveForDeposit: 1 })
+    .lean()
+    .exec();
+  const data = rows.map((row) => mapPaymentMethodLookupRow(row as PaymentMethodLookupLean));
   await setCachedJson(cacheKey, data, 60 * 10);
   return data;
 }

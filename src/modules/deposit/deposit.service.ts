@@ -19,6 +19,7 @@ import {
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { PlayerModel } from "../player/player.model";
 import { REASON_TYPES } from "../../shared/constants/reasonTypes";
 import { composeRejectReasonText, loadActiveReasonForReject } from "../reason/reasonLookup.service";
@@ -318,8 +319,7 @@ function buildDepositListFilter(q: ListDepositQuery, timeZone: string): Record<s
 }
 
 function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string }): string {
-  const last4 = b.accountNumber.length >= 4 ? b.accountNumber.slice(-4) : b.accountNumber;
-  return `${b.holderName} - ${b.bankName} - ${last4}`;
+  return formatBankDisplayName(b);
 }
 
 /** UTR must be unique among non-rejected deposits; rejected rows do not block reuse. */

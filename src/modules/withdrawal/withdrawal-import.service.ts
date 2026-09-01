@@ -3,6 +3,7 @@ import xlsx from "xlsx";
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { DepositModel } from "../deposit/deposit.model";
 import {
   buildBankResolutionCache,
@@ -100,8 +101,7 @@ function payableFromAmounts(amount: number, reverseBonus: number): number {
 }
 
 function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string }): string {
-  const last4 = b.accountNumber.length >= 4 ? b.accountNumber.slice(-4) : b.accountNumber;
-  return `${b.holderName} - ${b.bankName} - ${last4}`;
+  return formatBankDisplayName(b);
 }
 
 function parseBusinessDateTime(value: string | undefined, fieldName: string): Date {

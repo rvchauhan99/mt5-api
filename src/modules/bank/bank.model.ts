@@ -2,6 +2,7 @@ import { Schema, model, Types } from "mongoose";
 
 export interface BankDocument {
   _id: Types.ObjectId;
+  method?: string;
   holderName: string;
   bankName: string;
   accountNumber: string;
@@ -20,6 +21,7 @@ export interface BankDocument {
 
 const bankSchema = new Schema<BankDocument>(
   {
+    method: { type: String, trim: true },
     holderName: { type: String, required: true, trim: true },
     bankName: { type: String, required: true, trim: true },
     accountNumber: { type: String, required: true, trim: true, unique: true },

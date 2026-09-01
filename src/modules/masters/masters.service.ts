@@ -43,6 +43,8 @@ const SERVER_ONLY: Set<string> = new Set([
 function cacheDomainsForModel(modelKey: MasterModelKey): string[] {
   if (modelKey === "expenseType") return ["expenseType"];
   if (modelKey === "exchangeRate") return ["exchangeRate"];
+  // Bank lookup embeds payment-method activation flags — bump bank cache too.
+  if (modelKey === "paymentMethod") return ["paymentMethod", "bank"];
   return [];
 }
 
@@ -156,7 +158,17 @@ export async function listMasters(modelKey: string, params: ListMastersParams) {
     Model.countDocuments(filter),
   ]);
 
-  const fields = buildFieldsFromModel(Model);
+  let fields = buildFieldsFromModel(Model);
+  // Guarantee payment-method activation toggles appear in Masters UI even if schema was stale.
+  if (entry.modelKey === "paymentMethod") {
+    const ensureBoolean = (name: string) => {
+      if (!fields.some((f) => f.name === name)) {
+        fields = [...fields, { name, type: "BOOLEAN", required: false }];
+      }
+    };
+    ensureBoolean("isActiveForWithdrawalPayout");
+    ensureBoolean("isActiveForDeposit");
+  }
 
   return {
     fields,

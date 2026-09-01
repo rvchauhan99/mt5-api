@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { Types } from "mongoose";
 import type { z } from "zod";
 import { generateExcelBuffer } from "../../shared/services/excel.service";
@@ -20,6 +21,9 @@ import { BankBalanceSettlementModel } from "./bank-balance-settlement.model";
 import { computeClosingBalanceActualByBankIds } from "./bankClosingBalance";
 import { listBankQuerySchema } from "./bank.validation";
 import { resolveOpeningMoneyFromRequest } from "../../shared/utils/moneyFx";
+import { invalidateCacheDomains } from "../../shared/cache/domainCache";
+import { bankDisplayName, bankMethodLabel, toMethodCode } from "./bank.constants";
+import { PaymentMethodModel } from "../masters/payment-method.model";
 
 type ListBankQuery = z.infer<typeof listBankQuerySchema>;
 
@@ -158,8 +162,14 @@ function buildBankListFilter(q: ListBankQuery, timeZone: string): Record<string,
         { bankName: { $regex: esc, $options: "i" } },
         { accountNumber: { $regex: esc, $options: "i" } },
         { ifsc: { $regex: esc, $options: "i" } },
+        { method: { $regex: esc, $options: "i" } },
       ],
     });
+  }
+
+  const method = trimUndef(q.method);
+  if (method) {
+    conditions.push({ method });
   }
 
   const holderName = trimUndef(q.holderName);
@@ -237,18 +247,72 @@ function formatCreatedByForExport(createdBy: unknown): string {
   return String(createdBy);
 }
 
+function generateAccountNumber(method: string): string {
+  const prefix = method.replace(/_/g, "").toUpperCase().slice(0, 10) || "PAY";
+  return `${prefix}-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
+}
+
+async function resolvePaymentMethod(inputMethod?: string): Promise<{ code: string; label: string }> {
+  const raw = String(inputMethod ?? "").trim();
+  if (!raw) {
+    throw new AppError("validation_error", "Payment method is required", 400);
+  }
+
+  const codeCandidate = toMethodCode(raw);
+  const esc = raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const or: Record<string, unknown>[] = [
+    { code: codeCandidate },
+    { code: { $regex: `^${esc}$`, $options: "i" } },
+    { name: { $regex: `^${esc}$`, $options: "i" } },
+  ];
+  if (Types.ObjectId.isValid(raw)) {
+    or.push({ _id: new Types.ObjectId(raw) });
+  }
+
+  const row = await PaymentMethodModel.findOne({
+    isActive: true,
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+    $and: [{ $or: or }],
+  })
+    .select({ name: 1, code: 1 })
+    .lean()
+    .exec();
+
+  if (!row) {
+    throw new AppError(
+      "validation_error",
+      "Unknown or inactive payment method. Add it under Masters → Payment Method first.",
+      400,
+    );
+  }
+
+  const code = String(row.code ?? "").trim() || toMethodCode(String(row.name ?? raw));
+  const label = String(row.name ?? "").trim() || bankMethodLabel(code) || code;
+  return { code, label };
+}
+
 export async function createBank(input: {
-  holderName: string;
-  bankName: string;
-  accountNumber: string;
-  ifsc: string;
+  method?: string;
+  name?: string;
+  holderName?: string;
+  bankName?: string;
+  accountNumber?: string;
+  ifsc?: string;
   openingBalance: number;
   status: "active" | "deactive";
   openingOperatedCurrency?: string;
   openingOperatedAmount?: number;
   openingExchangeRate?: number;
 }, actorId: string, requestId?: string) {
-  const existing = await BankModel.findOne({ accountNumber: input.accountNumber });
+  const resolved = await resolvePaymentMethod(input.method);
+  const method = resolved.code;
+  const defaultLabel = resolved.label;
+  const holderName = (input.name || input.holderName || defaultLabel).trim();
+  const bankName = (input.bankName || defaultLabel).trim();
+  const accountNumber = (input.accountNumber || generateAccountNumber(method)).trim();
+  const ifsc = (input.ifsc || "N/A").trim();
+
+  const existing = await BankModel.findOne({ accountNumber });
   if (existing) throw new AppError("business_rule_error", "Account number already exists", 409);
   const opening = await resolveOpeningMoneyFromRequest({
     openingBalance: input.openingBalance,
@@ -257,10 +321,11 @@ export async function createBank(input: {
     openingExchangeRate: input.openingExchangeRate,
   });
   const doc = await BankModel.create({
-    holderName: input.holderName,
-    bankName: input.bankName,
-    accountNumber: input.accountNumber,
-    ifsc: input.ifsc,
+    method,
+    holderName,
+    bankName,
+    accountNumber,
+    ifsc,
     status: input.status,
     openingBalance: opening.openingBalance,
     openingOperatedCurrency: opening.openingOperatedCurrency,
@@ -275,10 +340,11 @@ export async function createBank(input: {
     entity: "bank",
     entityId: doc._id.toString(),
     newValue: {
-      holderName: input.holderName,
-      bankName: input.bankName,
-      accountNumber: input.accountNumber,
-      ifsc: input.ifsc,
+      method,
+      holderName,
+      bankName,
+      accountNumber,
+      ifsc,
       openingBalance: opening.openingBalance,
       openingOperatedCurrency: opening.openingOperatedCurrency,
       openingOperatedAmount: opening.openingOperatedAmount,
@@ -287,6 +353,7 @@ export async function createBank(input: {
     } as unknown as Record<string, unknown>,
     requestId,
   });
+  await invalidateCacheDomains(["bank"]);
   return doc;
 }
 
@@ -340,10 +407,8 @@ export async function exportBanksToBuffer(
     .lean();
 
   return generateExcelBuffer(rows, [
-    { header: "Holder Name", key: "holderName" },
-    { header: "Bank Name", key: "bankName" },
-    { header: "Account Number", key: "accountNumber" },
-    { header: "IFSC", key: "ifsc" },
+    { header: "Name", key: "holderName" },
+    { header: "Method", key: "method" },
     { header: "Opening Balance", key: "openingBalance" },
     { header: "Status", key: "status" },
     { header: "Created By", transform: (r) => formatCreatedByForExport(r.createdBy) },
@@ -721,9 +786,11 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
   return {
     bank: {
       _id: bank._id.toString(),
+      method: bank.method,
       holderName: bank.holderName,
       bankName: bank.bankName,
       accountNumber: bank.accountNumber,
+      displayName: bankDisplayName(bank),
       openingBalance: bank.openingBalance,
       currentBalance: bank.currentBalance ?? bank.openingBalance,
     },

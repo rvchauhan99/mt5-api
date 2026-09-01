@@ -6,6 +6,7 @@ import {
   listBankLookupController,
   listExchangeLookupController,
   listExpenseTypeLookupController,
+  listPaymentMethodLookupController,
   listPlayerLookupController,
 } from "./lookup.controller";
 import { lookupPermissionMiddleware } from "./lookupPermission.middleware";
@@ -19,6 +20,11 @@ lookupRouter.get(
   "/expense-types",
   lookupPermissionMiddleware("expenseTypes"),
   listExpenseTypeLookupController,
+);
+lookupRouter.get(
+  "/payment-methods",
+  lookupPermissionMiddleware("paymentMethods"),
+  listPaymentMethodLookupController,
 );
 lookupRouter.get("/players", lookupPermissionMiddleware("players"), listPlayerLookupController);
 lookupRouter.get(

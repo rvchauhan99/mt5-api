@@ -4,6 +4,7 @@ import type { z } from "zod";
 import { AuditLogModel } from "../audit/audit.model";
 import { BankBalanceSettlementModel } from "../bank/bank-balance-settlement.model";
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName } from "../bank/bank.constants";
 import { ExchangeModel } from "../exchange/exchange.model";
 import { ExchangeTopupModel } from "../exchange-topup/exchange-topup.model";
 import { LiabilityEntryModel } from "../liability/liability-entry.model";
@@ -904,7 +905,7 @@ export async function getDashboardSummary(
         ]),
 
     BankModel.find({ status: "active" })
-      .select({ _id: 1, holderName: 1, bankName: 1, openingBalance: 1 })
+      .select({ _id: 1, method: 1, holderName: 1, bankName: 1, accountNumber: 1, openingBalance: 1 })
       .lean(),
 
     DepositModel.aggregate([
@@ -1411,7 +1412,7 @@ export async function getDashboardSummary(
 
       return {
         bankId,
-        name: `${String(bank.holderName ?? "").trim()} ${String(bank.bankName ?? "").trim()}`.trim() || "Unknown",
+        name: bankDisplayName(bank),
         holderName: String(bank.holderName ?? ""),
         bankName: String(bank.bankName ?? ""),
         openingBalance,

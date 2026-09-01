@@ -5,6 +5,7 @@ import { REASON_TYPES } from "../../shared/constants/reasonTypes";
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
+import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { computeClosingBalanceActualByBankIds } from "../bank/bankClosingBalance";
 import { DepositModel } from "../deposit/deposit.model";
 import { ExpenseModel } from "../expense/expense.model";
@@ -189,9 +190,88 @@ function transactionDateCondition(
   return null;
 }
 
-function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string }): string {
-  const last4 = b.accountNumber.length >= 4 ? b.accountNumber.slice(-4) : b.accountNumber;
-  return `${b.holderName} - ${b.bankName} - ${last4}`;
+function bankDisplayName(b: { holderName: string; bankName: string; accountNumber: string; method?: string }): string {
+  return formatBankDisplayName(b);
+}
+
+type WithdrawalDestinationInput = {
+  accountNumber?: string;
+  accountHolderName?: string;
+  bankName?: string;
+  ifsc?: string;
+  cryptoWalletAddress?: string;
+  cryptoNetwork?: string;
+  cryptoAsset?: string;
+};
+
+async function resolveWithdrawalDestination(
+  input: WithdrawalDestinationInput,
+  options?: { payoutBankId?: string; payoutSettlementType?: "bank" | "person"; forceCrypto?: boolean },
+): Promise<{
+  isCrypto: boolean;
+  accountNumber: string;
+  accountHolderName: string;
+  bankName: string;
+  ifsc: string;
+  cryptoWalletAddress: string;
+  cryptoNetwork: string;
+  cryptoAsset: string;
+}> {
+  const accountNumber = String(input.accountNumber ?? "").trim();
+  const accountHolderName = String(input.accountHolderName ?? "").trim();
+  const bankName = String(input.bankName ?? "").trim();
+  const ifsc = String(input.ifsc ?? "").trim();
+  const cryptoWalletAddress = String(input.cryptoWalletAddress ?? "").trim();
+  const cryptoNetwork = String(input.cryptoNetwork ?? "").trim();
+  const cryptoAsset = String(input.cryptoAsset ?? "").trim();
+
+  let isCrypto = false;
+  const settlement = options?.payoutSettlementType ?? "bank";
+  if (settlement === "bank" && options?.payoutBankId && Types.ObjectId.isValid(options.payoutBankId)) {
+    const bank = await BankModel.findById(options.payoutBankId).select({ method: 1 }).lean();
+    isCrypto = String(bank?.method ?? "") === "crypto";
+  }
+  if (!isCrypto && options?.forceCrypto) {
+    isCrypto = true;
+  }
+
+  if (isCrypto) {
+    if (!cryptoWalletAddress) {
+      throw new AppError("validation_error", "Crypto wallet address is required.", 400);
+    }
+    if (!cryptoNetwork) {
+      throw new AppError("validation_error", "Crypto network is required.", 400);
+    }
+    if (!cryptoAsset) {
+      throw new AppError("validation_error", "Crypto asset is required.", 400);
+    }
+    return {
+      isCrypto: true,
+      accountNumber,
+      accountHolderName,
+      bankName: bankName || `${cryptoAsset} (${cryptoNetwork})`,
+      ifsc,
+      cryptoWalletAddress,
+      cryptoNetwork,
+      cryptoAsset,
+    };
+  }
+
+  if (!accountNumber) throw new AppError("validation_error", "Account number is required.", 400);
+  if (!accountHolderName) throw new AppError("validation_error", "Account holder name is required.", 400);
+  if (!bankName) throw new AppError("validation_error", "Bank name is required.", 400);
+  if (!ifsc || ifsc.length < 4) throw new AppError("validation_error", "IFSC is required.", 400);
+
+  return {
+    isCrypto: false,
+    accountNumber,
+    accountHolderName,
+    bankName,
+    ifsc,
+    cryptoWalletAddress: "",
+    cryptoNetwork: "",
+    cryptoAsset: "",
+  };
 }
 
 /** Base filters per list view (deposit-style `view` query). */
@@ -322,10 +402,13 @@ async function normalizeBankCurrentBalances(bankIds: string[]) {
 export async function createWithdrawal(
   input: {
     playerId: string;
-    accountNumber: string;
-    accountHolderName: string;
-    bankName: string;
-    ifsc: string;
+    accountNumber?: string;
+    accountHolderName?: string;
+    bankName?: string;
+    ifsc?: string;
+    cryptoWalletAddress?: string;
+    cryptoNetwork?: string;
+    cryptoAsset?: string;
     amount: number;
     reverseBonus: number;
     requestedAt?: string;
@@ -342,6 +425,11 @@ export async function createWithdrawal(
 ) {
   const player = await PlayerModel.findById(input.playerId);
   if (!player) throw new AppError("not_found", "Player not found", 404);
+
+  const destination = await resolveWithdrawalDestination(input, {
+    payoutBankId: input.bankId,
+    payoutSettlementType: input.payoutSettlementType ?? "bank",
+  });
 
   const platformCurrency = await requirePlatformCurrency();
   const money = await resolveMoneyFromRequest(
@@ -366,10 +454,13 @@ export async function createWithdrawal(
   const doc = await WithdrawalModel.create({
     player: new Types.ObjectId(input.playerId),
     playerName: playerLabel,
-    accountNumber: input.accountNumber.trim(),
-    accountHolderName: input.accountHolderName.trim(),
-    bankName: input.bankName.trim(),
-    ifsc: input.ifsc.trim(),
+    accountNumber: destination.accountNumber,
+    accountHolderName: destination.accountHolderName,
+    bankName: destination.bankName,
+    ifsc: destination.ifsc,
+    cryptoWalletAddress: destination.cryptoWalletAddress,
+    cryptoNetwork: destination.cryptoNetwork,
+    cryptoAsset: destination.cryptoAsset,
     amount: money.amount,
     operatedCurrency: money.operatedCurrency,
     operatedAmount: money.operatedAmount,
@@ -388,7 +479,10 @@ export async function createWithdrawal(
     entityId: doc._id.toString(),
     newValue: {
       playerId: input.playerId,
-      accountNumber: input.accountNumber,
+      accountNumber: destination.accountNumber,
+      cryptoWalletAddress: destination.cryptoWalletAddress,
+      cryptoNetwork: destination.cryptoNetwork,
+      cryptoAsset: destination.cryptoAsset,
       amount: money.amount,
       operatedCurrency: money.operatedCurrency,
       operatedAmount: money.operatedAmount,
@@ -423,10 +517,13 @@ export async function createWithdrawal(
 export async function updateWithdrawalByExchange(
   id: string,
   input: {
-    accountNumber: string;
-    accountHolderName: string;
-    bankName: string;
-    ifsc: string;
+    accountNumber?: string;
+    accountHolderName?: string;
+    bankName?: string;
+    ifsc?: string;
+    cryptoWalletAddress?: string;
+    cryptoNetwork?: string;
+    cryptoAsset?: string;
     amount: number;
     reverseBonus: number;
     operatedCurrency?: string;
@@ -441,6 +538,12 @@ export async function updateWithdrawalByExchange(
   if (doc.status !== "requested") {
     throw new AppError("business_rule_error", "Only requested withdrawals can be updated", 400);
   }
+
+  const destination = await resolveWithdrawalDestination(input, {
+    payoutBankId: doc.payoutBankId ? String(doc.payoutBankId) : undefined,
+    payoutSettlementType: doc.payoutSettlementType ?? "bank",
+    forceCrypto: Boolean(String(doc.cryptoWalletAddress ?? "").trim()),
+  });
 
   const platformCurrency = await requirePlatformCurrency();
   const money = await resolveMoneyFromRequest(
@@ -464,15 +567,21 @@ export async function updateWithdrawalByExchange(
     accountHolderName: doc.accountHolderName,
     bankName: doc.bankName,
     ifsc: doc.ifsc,
+    cryptoWalletAddress: doc.cryptoWalletAddress,
+    cryptoNetwork: doc.cryptoNetwork,
+    cryptoAsset: doc.cryptoAsset,
     amount: doc.amount,
     reverseBonus: doc.reverseBonus,
     payableAmount: doc.payableAmount,
   };
 
-  doc.accountNumber = input.accountNumber.trim();
-  doc.accountHolderName = input.accountHolderName.trim();
-  doc.bankName = input.bankName.trim();
-  doc.ifsc = input.ifsc.trim();
+  doc.accountNumber = destination.accountNumber;
+  doc.accountHolderName = destination.accountHolderName;
+  doc.bankName = destination.bankName;
+  doc.ifsc = destination.ifsc;
+  doc.cryptoWalletAddress = destination.cryptoWalletAddress;
+  doc.cryptoNetwork = destination.cryptoNetwork;
+  doc.cryptoAsset = destination.cryptoAsset;
   doc.amount = money.amount;
   doc.operatedCurrency = money.operatedCurrency;
   doc.operatedAmount = money.operatedAmount;
@@ -492,6 +601,9 @@ export async function updateWithdrawalByExchange(
       accountHolderName: doc.accountHolderName,
       bankName: doc.bankName,
       ifsc: doc.ifsc,
+      cryptoWalletAddress: doc.cryptoWalletAddress,
+      cryptoNetwork: doc.cryptoNetwork,
+      cryptoAsset: doc.cryptoAsset,
       amount: doc.amount,
       operatedCurrency: money.operatedCurrency,
       operatedAmount: money.operatedAmount,
