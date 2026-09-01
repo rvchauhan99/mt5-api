@@ -69,6 +69,7 @@ export interface WithdrawalDocument {
   lastAmendedAt?: Date;
   lastAmendedBy?: Types.ObjectId;
   amendmentHistory?: WithdrawalAmendmentEntry[];
+  duplicateKey?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -136,6 +137,7 @@ const withdrawalSchema = new Schema<WithdrawalDocument>(
     lastAmendedAt: { type: Date },
     lastAmendedBy: { type: Schema.Types.ObjectId, ref: "User" },
     amendmentHistory: { type: [withdrawalAmendmentEntrySchema], default: [] },
+    duplicateKey: { type: String, trim: true },
   },
   { timestamps: true },
 );
@@ -145,12 +147,12 @@ withdrawalSchema.index({ status: 1, createdAt: -1, _id: -1 });
 withdrawalSchema.index({ player: 1, updatedAt: -1, _id: -1 });
 withdrawalSchema.index({ payoutBankId: 1, createdAt: -1, _id: -1 });
 withdrawalSchema.index(
-  { utr: 1 },
+  { duplicateKey: 1 },
   {
     unique: true,
     partialFilterExpression: {
       status: { $ne: "rejected" },
-      utr: { $exists: true, $type: "string", $ne: "" },
+      duplicateKey: { $exists: true, $type: "string", $ne: "" },
     },
   },
 );

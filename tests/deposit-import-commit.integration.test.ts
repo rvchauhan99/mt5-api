@@ -128,16 +128,18 @@ describe("deposit import bulk commit", () => {
     expect(count).toBe(60);
   });
 
-  it("records duplicate UTR errors while inserting other rows in the same chunk", async () => {
+  it("allows same reference number when other composite fields differ", async () => {
     await DepositModel.create({
       settlementAccountType: "bank",
       bankId: new mongoose.Types.ObjectId(bankId),
       bankName: "Existing",
+      player: new mongoose.Types.ObjectId(playerMongoId),
       utr: "DUPLICATE-UTR-001",
       amount: 500,
       status: "pending",
       createdBy: new mongoose.Types.ObjectId(actorId),
       bankImpact: true,
+      entryAt: new Date("2024-01-15T10:00:00.000Z"),
     });
 
     const rows = [
@@ -148,10 +150,41 @@ describe("deposit import bulk commit", () => {
 
     const result = await applyDepositImportRows(rows, actorId, { chunkSize: 10 });
 
-    expect(result.created).toBe(2);
+    expect(result.created).toBe(3);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("records composite duplicate errors when all five fields match", async () => {
+    const entryAt = new Date("2024-06-01T10:00:00.000Z");
+    await DepositModel.create({
+      settlementAccountType: "bank",
+      bankId: new mongoose.Types.ObjectId(bankId),
+      bankName: "Existing",
+      player: new mongoose.Types.ObjectId(playerMongoId),
+      utr: "COMPOSITE-DUP-001",
+      amount: 100,
+      status: "pending",
+      createdBy: new mongoose.Types.ObjectId(actorId),
+      bankImpact: true,
+      entryAt,
+    });
+
+    const rows = [
+      importRow({
+        utr: "COMPOSITE-DUP-001",
+        amount: 100,
+        operatedAmount: 100,
+        entryAt: entryAt.toISOString(),
+      }),
+      importRow({ utr: "COMPOSITE-OK-002", amount: 200, operatedAmount: 200 }),
+    ];
+
+    const result = await applyDepositImportRows(rows, actorId, { chunkSize: 10 });
+
+    expect(result.created).toBe(1);
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]?.utr).toBe("DUPLICATE-UTR-001");
-    expect(result.errors[0]?.error).toMatch(/Reference Number already exists/i);
+    expect(result.errors[0]?.utr).toBe("COMPOSITE-DUP-001");
+    expect(result.errors[0]?.error).toMatch(/duplicate transaction already exists/i);
   });
 
   it("commitDepositImportRows writes one summary audit in the background", async () => {

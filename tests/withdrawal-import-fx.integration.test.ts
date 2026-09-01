@@ -274,4 +274,91 @@ describe("withdrawal import FX", () => {
     expect(result.summary.valid).toBe(0);
     expect(result.invalidRows[0]?.errors.join(" ")).toMatch(/No master exchange rate/i);
   });
+
+  it("allows same payout reference when amount differs from existing withdrawal", async () => {
+    const requestedAt = new Date("2024-03-10T10:00:00.000Z");
+    await WithdrawalModel.create({
+      player: new mongoose.Types.ObjectId(playerMongoId),
+      playerName: "WDR-PLAYER-001",
+      accountNumber: "123456789012",
+      accountHolderName: "John Doe",
+      bankName: "HDFC Bank",
+      ifsc: "HDFC0001234",
+      amount: 9000,
+      operatedCurrency: "INR",
+      operatedAmount: 9000,
+      exchangeRate: 1,
+      reverseBonus: 0,
+      payableAmount: 9000,
+      requestedAt,
+      payoutSettlementType: "bank",
+      payoutBankId: new mongoose.Types.ObjectId(payoutBankId),
+      payoutBankName: "FX Bank",
+      utr: "SHARED-REF-001",
+      status: "requested",
+      createdBy: new mongoose.Types.ObjectId(actorId),
+    });
+
+    const result = await applyWithdrawalImportRows(
+      [
+        commitRow({
+          payoutUtr: "SHARED-REF-001",
+          amount: 5000,
+          operatedAmount: 5000,
+          requestedAt: requestedAt.toISOString(),
+        }),
+      ],
+      actorId,
+    );
+
+    expect(result.created).toBe(1);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("rejects import when all five composite fields match an existing withdrawal", async () => {
+    const requestedAt = new Date("2024-04-15T12:00:00.000Z");
+    await WithdrawalModel.create({
+      player: new mongoose.Types.ObjectId(playerMongoId),
+      playerName: "WDR-PLAYER-001",
+      accountNumber: "123456789012",
+      accountHolderName: "John Doe",
+      bankName: "HDFC Bank",
+      ifsc: "HDFC0001234",
+      amount: 5000,
+      operatedCurrency: "INR",
+      operatedAmount: 5000,
+      exchangeRate: 1,
+      reverseBonus: 0,
+      payableAmount: 5000,
+      requestedAt,
+      payoutSettlementType: "bank",
+      payoutBankId: new mongoose.Types.ObjectId(payoutBankId),
+      payoutBankName: "FX Bank",
+      utr: "COMPOSITE-WDR-001",
+      status: "requested",
+      createdBy: new mongoose.Types.ObjectId(actorId),
+    });
+
+    const result = await applyWithdrawalImportRows(
+      [
+        commitRow({
+          payoutUtr: "COMPOSITE-WDR-001",
+          amount: 5000,
+          operatedAmount: 5000,
+          requestedAt: requestedAt.toISOString(),
+        }),
+        commitRow({
+          payoutUtr: "COMPOSITE-WDR-OK",
+          amount: 6000,
+          operatedAmount: 6000,
+        }),
+      ],
+      actorId,
+    );
+
+    expect(result.created).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.utr).toBe("COMPOSITE-WDR-001");
+    expect(result.errors[0]?.error).toMatch(/duplicate transaction already exists/i);
+  });
 });

@@ -44,7 +44,8 @@ import { subscribeWithdrawalBulkApproveEvents } from "./withdrawal-bulk-approve-
 
 export async function createWithdrawalController(req: Request, res: Response) {
   const body = createWithdrawalBodySchema.parse(req.body);
-  const data = await createWithdrawal(body, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const data = await createWithdrawal(body, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.CREATED).json({ success: true, data });
 }
 
@@ -65,14 +66,16 @@ export async function updateWithdrawalExchangeController(req: Request, res: Resp
 export async function updateWithdrawalBankerController(req: Request, res: Response) {
   const body = withdrawalBankerPayoutBodySchema.parse(req.body);
   const id = String(req.params.id);
-  const data = await updateWithdrawalByBanker(id, body, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const data = await updateWithdrawalByBanker(id, body, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.OK).json({ success: true, data });
 }
 
 export async function amendWithdrawalController(req: Request, res: Response) {
   const body = amendWithdrawalBodySchema.parse(req.body);
   const id = String(req.params.id);
-  const data = await amendWithdrawal(id, body, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const data = await amendWithdrawal(id, body, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.OK).json({ success: true, data });
 }
 

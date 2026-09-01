@@ -64,6 +64,8 @@ export interface DepositDocument {
   lastAmendedAt?: Date;
   lastAmendedBy?: Types.ObjectId;
   amendmentHistory?: DepositAmendmentEntry[];
+  /** Composite duplicate fingerprint (trader + settlement + amount + date + reference). */
+  duplicateKey?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -130,14 +132,21 @@ const depositSchema = new Schema<DepositDocument>(
     lastAmendedAt: { type: Date },
     lastAmendedBy: { type: Schema.Types.ObjectId, ref: "User" },
     amendmentHistory: { type: [amendmentEntrySchema], default: [] },
+    duplicateKey: { type: String, trim: true },
   },
   { timestamps: true },
 );
 
-/** Uniqueness only for non-rejected deposits so a UTR may repeat on rejected rows. */
+/** Composite duplicate fingerprint among non-rejected deposits. */
 depositSchema.index(
-  { utr: 1 },
-  { unique: true, partialFilterExpression: { status: { $ne: "rejected" } } },
+  { duplicateKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $ne: "rejected" },
+      duplicateKey: { $exists: true, $type: "string", $ne: "" },
+    },
+  },
 );
 depositSchema.index({ status: 1, entryAt: -1, _id: -1 });
 depositSchema.index({ status: 1, createdAt: -1, _id: -1 });

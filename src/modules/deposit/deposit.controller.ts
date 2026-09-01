@@ -46,14 +46,16 @@ import { subscribeDepositBulkExchangeApproveEvents } from "./deposit-bulk-exchan
 
 export async function createDepositController(req: Request, res: Response) {
   const body = createDepositBodySchema.parse(req.body);
-  const data = await createDeposit(body, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const data = await createDeposit(body, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.CREATED).json({ success: true, data });
 }
 
 export async function updateDepositController(req: Request, res: Response) {
   const body = updateDepositBodySchema.parse(req.body);
   const id = String(req.params.id);
-  const data = await updateDepositByBanker(id, body, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const data = await updateDepositByBanker(id, body, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.OK).json({ success: true, data });
 }
 
@@ -79,7 +81,8 @@ export async function exportDepositController(req: Request, res: Response) {
 export async function amendDepositController(req: Request, res: Response) {
   const body = amendDepositBodySchema.parse(req.body);
   const id = String(req.params.id);
-  const data = await amendVerifiedDeposit(id, body, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const data = await amendVerifiedDeposit(id, body, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.OK).json({ success: true, data });
 }
 
@@ -192,7 +195,8 @@ export async function validateDepositImportController(req: Request, res: Respons
 
 export async function commitDepositImportController(req: Request, res: Response) {
   const body = commitDepositImportBodySchema.parse(req.body);
-  const result = await commitDepositImportRows(body.rows, req.user!.userId, req.requestId);
+  const timeZone = resolveRequestTimeZone(req);
+  const result = await commitDepositImportRows(body.rows, req.user!.userId, req.requestId, { timeZone });
   res.status(StatusCodes.OK).json({ success: true, data: result });
 }
 

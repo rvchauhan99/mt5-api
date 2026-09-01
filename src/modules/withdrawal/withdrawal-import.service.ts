@@ -4,7 +4,6 @@ import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
 import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
-import { DepositModel } from "../deposit/deposit.model";
 import {
   buildBankResolutionCache,
   buildExchangePlayerResolutionCache,
@@ -25,8 +24,13 @@ import {
 } from "../../shared/utils/importDateTime";
 import { DEFAULT_TIMEZONE } from "../../shared/utils/timezone";
 import { logger } from "../../shared/logger";
-import { normalizeUtr, escapeRegex as escapeUtrRegex } from "../../shared/utils/utr";
+import { normalizeUtr } from "../../shared/utils/utr";
 import { WithdrawalModel } from "./withdrawal.model";
+import {
+  buildTransactionDuplicateKey,
+  DUPLICATE_TRANSACTION_MESSAGE,
+  findDuplicateTransaction,
+} from "../../shared/utils/transactionDuplicate";
 import { resolveMoneyInput } from "../../shared/utils/moneyFx";
 import { getCurrencyMinUnit, isSupportedCurrency, type SupportedCurrency } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
@@ -591,29 +595,7 @@ export async function validateWithdrawalImportRows(
   const payoutPersonResolutionCache = buildPersonResolutionCache(uniquePayoutPersonNames, payoutPersonMap);
   const exchangePlayerResolutionCache = buildExchangePlayerResolutionCache(uniquePlayerIds, exchangePlayerMap);
 
-  const seenPayoutUtrs = new Set<string>();
-  const payoutUtrChecks = rowDataList.map((r) => r.payoutUtr).filter(Boolean);
-  const existingPayoutUtrConflicts = new Set<string>();
-  if (payoutUtrChecks.length > 0) {
-    const normalizedUtrs = [...new Set(payoutUtrChecks.map((u) => normalizeUtr(u)))];
-    const utrMatchers = normalizedUtrs.map((u) => new RegExp(`^${escapeUtrRegex(u)}$`, "i"));
-    const [depConflicts, wdConflicts] = await Promise.all([
-      DepositModel.find({
-        utr: { $in: utrMatchers },
-        status: { $ne: "rejected" },
-      })
-        .select({ utr: 1 })
-        .lean(),
-      WithdrawalModel.find({
-        utr: { $in: utrMatchers },
-        status: { $ne: "rejected" },
-      })
-        .select({ utr: 1 })
-        .lean(),
-    ]);
-    for (const d of depConflicts) existingPayoutUtrConflicts.add(normalizeUtr(d.utr));
-    for (const w of wdConflicts) if (w.utr) existingPayoutUtrConflicts.add(normalizeUtr(w.utr));
-  }
+  const seenDuplicateKeys = new Set<string>();
 
   for (const rd of rowDataList) {
     const rowErrors: string[] = [];
@@ -691,17 +673,7 @@ export async function validateWithdrawalImportRows(
     if (!hasPayoutUtr) rowErrors.push(`${refLabel} is required`);
     else if (rd.payoutUtr.length < 4) rowErrors.push(`${refLabel} must be at least 4 characters`);
     else if (rd.payoutUtr.length > 120) rowErrors.push(`${refLabel} must not exceed 120 characters`);
-    else {
-      const normalized = normalizeUtr(rd.payoutUtr);
-      if (existingPayoutUtrConflicts.has(normalized)) {
-        rowErrors.push(`${refLabel} already exists in another transaction`);
-      } else if (seenPayoutUtrs.has(normalized)) {
-        rowErrors.push(`Duplicate ${refLabel} within this file`);
-      } else {
-        seenPayoutUtrs.add(normalized);
-        resolvedPayoutUtr = normalized;
-      }
-    }
+    else resolvedPayoutUtr = normalizeUtr(rd.payoutUtr);
 
     if (payoutMode === "bank") {
       if (rd.payoutBankNotationError) rowErrors.push(rd.payoutBankNotationError);
@@ -771,7 +743,53 @@ export async function validateWithdrawalImportRows(
           errors: rowErrors,
         }),
       );
-    } else if (moneyResult.ok) {
+    } else if (moneyResult.ok && resolvedPlayerMongoId && resolvedPayoutUtr) {
+      const settlementAccountId =
+        payoutMode === "bank" ? resolvedPayoutBankId! : resolvedPayoutPersonId!;
+      const transactionAt = parsedDate ?? new Date();
+      const dupInput = {
+        playerId: resolvedPlayerMongoId,
+        settlementType: payoutMode,
+        settlementAccountId,
+        amount: platformAmount!,
+        transactionAt,
+        utr: resolvedPayoutUtr,
+        timeZone: importTimeZone,
+      };
+      const dupKey = buildTransactionDuplicateKey(dupInput);
+      if (seenDuplicateKeys.has(dupKey)) {
+        rowErrors.push(`Duplicate transaction within this file (${DUPLICATE_TRANSACTION_MESSAGE.toLowerCase()})`);
+      } else {
+        const existingDup = await findDuplicateTransaction(dupInput);
+        if (existingDup) {
+          rowErrors.push(DUPLICATE_TRANSACTION_MESSAGE);
+        } else {
+          seenDuplicateKeys.add(dupKey);
+        }
+      }
+
+      if (rowErrors.length > 0) {
+        invalidRows.push(
+          makeWithdrawalImportInvalidRow({
+            row: rd.rowNum,
+            dateTime: formatImportDateTimeForDisplay(rd.dateTimeValue),
+            playerId: rd.playerIdRaw,
+            accountNumber: rd.accountNumberRaw,
+            accountHolderName: rd.accountHolderName,
+            bankName: rd.bankName,
+            ifsc: rd.ifsc,
+            operatedCurrency: rd.operatedCurrencyRaw,
+            withdrawalAmount: rd.amountRaw,
+            exchangeRate: String(moneyResult.exchangeRate),
+            platformAmount: platformAmount != null ? String(platformAmount) : "",
+            payoutUtr: rd.payoutUtr,
+            payoutSettlementType: rd.payoutSettlementType || "Bank",
+            payoutBank: rd.payoutBankIdentifierRaw,
+            payoutLiablePersonName: rd.payoutPersonName,
+            errors: rowErrors,
+          }),
+        );
+      } else {
       validRows.push({
         row: rd.rowNum,
         playerMongoId: resolvedPlayerMongoId!,
@@ -794,6 +812,7 @@ export async function validateWithdrawalImportRows(
         payoutLiabilityPersonId: resolvedPayoutPersonId,
         payoutLiabilityPersonName: resolvedPayoutPersonName,
       });
+      }
     }
   }
 
@@ -866,22 +885,27 @@ async function loadWithdrawalImportLookups(rows: WithdrawalImportCommitRow[]) {
   };
 }
 
-async function findConflictingPayoutUtrsInDb(utrs: string[]): Promise<Set<string>> {
-  const normalized = [...new Set(utrs.map((u) => normalizeUtr(u)).filter(Boolean))];
-  if (normalized.length === 0) return new Set();
-  const utrMatchers = normalized.map((u) => new RegExp(`^${escapeUtrRegex(u)}$`, "i"));
-  const [depConflicts, wdConflicts] = await Promise.all([
-    DepositModel.find({ utr: { $in: utrMatchers }, status: { $ne: "rejected" } })
-      .select({ utr: 1 })
-      .lean(),
-    WithdrawalModel.find({ utr: { $in: utrMatchers }, status: { $ne: "rejected" } })
-      .select({ utr: 1 })
-      .lean(),
-  ]);
-  const conflicts = new Set<string>();
-  for (const d of depConflicts) conflicts.add(normalizeUtr(d.utr));
-  for (const w of wdConflicts) if (w.utr) conflicts.add(normalizeUtr(w.utr));
-  return conflicts;
+function withdrawalImportDuplicateKeyFromRow(
+  row: WithdrawalImportCommitRow,
+  importTimeZone: string,
+): string | null {
+  const payoutUtr = row.payoutUtr?.trim();
+  const payoutMode = row.payoutSettlementType ?? "bank";
+  const settlementAccountId =
+    payoutMode === "bank" ? row.payoutBankId?.trim() : row.payoutLiabilityPersonId?.trim();
+  if (!payoutUtr || !settlementAccountId || !row.playerMongoId?.trim()) return null;
+  const requestedAt = row.requestedAt
+    ? parseBusinessDateTime(row.requestedAt, "requestedAt")
+    : new Date();
+  return buildTransactionDuplicateKey({
+    playerId: row.playerMongoId,
+    settlementType: payoutMode,
+    settlementAccountId,
+    amount: row.amount,
+    transactionAt: requestedAt,
+    utr: payoutUtr,
+    timeZone: importTimeZone,
+  });
 }
 
 function buildWithdrawalImportInsertDoc(
@@ -892,12 +916,14 @@ function buildWithdrawalImportInsertDoc(
     personById: Map<string, PersonImportLean>;
     playerById: Map<string, { playerId: string; phone: string; label: string }>;
   },
+  importTimeZone: string,
 ): Record<string, unknown> | { error: string } {
   const player = lookups.playerById.get(row.playerMongoId);
   if (!player) return { error: "Player not found" };
 
   const reverseBonus = 0;
   const payableAmount = row.amount;
+  const requestedAt = row.requestedAt ? parseBusinessDateTime(row.requestedAt, "requestedAt") : new Date();
 
   const base: Record<string, unknown> = {
     player: new Types.ObjectId(row.playerMongoId),
@@ -912,7 +938,7 @@ function buildWithdrawalImportInsertDoc(
     exchangeRate: row.exchangeRate,
     reverseBonus,
     payableAmount,
-    requestedAt: row.requestedAt ? parseBusinessDateTime(row.requestedAt, "requestedAt") : new Date(),
+    requestedAt,
     // Imported rows must remain in requested stage for banker confirmation flow.
     status: "requested",
     createdBy: actorOid,
@@ -933,6 +959,15 @@ function buildWithdrawalImportInsertDoc(
       if (bank.status !== "active") return { error: "Payout bank is not active" };
       base.payoutBankId = new Types.ObjectId(bankIdStr);
       base.payoutBankName = bankDisplayName(bank);
+      base.duplicateKey = buildTransactionDuplicateKey({
+        playerId: row.playerMongoId,
+        settlementType: "bank",
+        settlementAccountId: bankIdStr,
+        amount: row.amount,
+        transactionAt: requestedAt,
+        utr: row.payoutUtr,
+        timeZone: importTimeZone,
+      });
     } else {
       const personIdStr = row.payoutLiabilityPersonId?.trim();
       if (!personIdStr) return { error: "Payout liability person is required" };
@@ -941,6 +976,15 @@ function buildWithdrawalImportInsertDoc(
       if (!person.isActive) return { error: "Payout liability person is inactive" };
       base.payoutLiabilityPersonId = new Types.ObjectId(personIdStr);
       base.payoutLiabilityPersonName = person.name.trim();
+      base.duplicateKey = buildTransactionDuplicateKey({
+        playerId: row.playerMongoId,
+        settlementType: "person",
+        settlementAccountId: personIdStr,
+        amount: row.amount,
+        transactionAt: requestedAt,
+        utr: row.payoutUtr,
+        timeZone: importTimeZone,
+      });
     }
   } else {
     return { error: `${WITHDRAWAL_IMPORT_CSV_COLUMNS.referenceNumber} is required` };
@@ -962,9 +1006,7 @@ function isMongooseBulkWriteError(err: unknown): err is {
 }
 
 function withdrawalBulkWriteErrorMessage(writeError: { errmsg?: string; code?: number }): string {
-  if (writeError.code === 11000) {
-    return `${WITHDRAWAL_IMPORT_CSV_COLUMNS.referenceNumber} already exists in another transaction`;
-  }
+  if (writeError.code === 11000) return DUPLICATE_TRANSACTION_MESSAGE;
   return writeError.errmsg || "Insert failed";
 }
 
@@ -977,16 +1019,18 @@ export async function applyWithdrawalImportRows(
   actorId: string,
   options?: {
     chunkSize?: number;
+    timeZone?: string;
     onProgress?: (progress: WithdrawalImportCommitProgress) => Promise<void> | void;
   },
 ): Promise<{ created: number; errors: WithdrawalImportCommitError[]; createdIds: string[] }> {
   const actorOid = new Types.ObjectId(actorId);
   const chunkSize = options?.chunkSize ?? WITHDRAWAL_IMPORT_CHUNK_SIZE;
+  const importTimeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
   const totalRows = rows.length;
   let created = 0;
   const errors: WithdrawalImportCommitError[] = [];
   const createdIds: string[] = [];
-  const jobPayoutUtrSet = new Set<string>();
+  const seenDuplicateKeys = new Set<string>();
 
   const indexedRows: IndexedWithdrawalImportRow[] = rows.map((row, index) => ({ index, row }));
   const { bankById, personById, playerById } = await loadWithdrawalImportLookups(rows);
@@ -994,9 +1038,6 @@ export async function applyWithdrawalImportRows(
   let processedRows = 0;
 
   for (const chunk of chunks) {
-    const chunkPayoutUtrs = chunk.map((c) => c.row.payoutUtr).filter(Boolean) as string[];
-    const dbConflicts = await findConflictingPayoutUtrsInDb(chunkPayoutUtrs);
-
     const pendingInserts: Array<{ doc: Record<string, unknown>; item: IndexedWithdrawalImportRow }> = [];
 
     for (const item of chunk) {
@@ -1009,17 +1050,62 @@ export async function applyWithdrawalImportRows(
         });
         continue;
       }
-      const normalizedUtr = normalizeUtr(payoutUtr);
-      if (dbConflicts.has(normalizedUtr) || jobPayoutUtrSet.has(normalizedUtr)) {
+
+      const payoutMode = item.row.payoutSettlementType ?? "bank";
+      const settlementAccountId =
+        payoutMode === "bank"
+          ? item.row.payoutBankId?.trim()
+          : item.row.payoutLiabilityPersonId?.trim();
+      if (!settlementAccountId) {
         errors.push({
           row: item.index + 1,
           utr: payoutUtr,
-          error: `${WITHDRAWAL_IMPORT_CSV_COLUMNS.referenceNumber} already exists in another transaction`,
+          error:
+            payoutMode === "bank"
+              ? "Payout bank is required"
+              : "Payout liability person is required",
         });
         continue;
       }
 
-      const built = buildWithdrawalImportInsertDoc(item.row, actorOid, { bankById, personById, playerById });
+      const requestedAt = item.row.requestedAt
+        ? parseBusinessDateTime(item.row.requestedAt, "requestedAt")
+        : new Date();
+      const dupInput = {
+        playerId: item.row.playerMongoId,
+        settlementType: payoutMode as "bank" | "person",
+        settlementAccountId,
+        amount: item.row.amount,
+        transactionAt: requestedAt,
+        utr: payoutUtr,
+        timeZone: importTimeZone,
+      };
+      const dupKey = buildTransactionDuplicateKey(dupInput);
+      if (seenDuplicateKeys.has(dupKey)) {
+        errors.push({
+          row: item.index + 1,
+          utr: payoutUtr,
+          error: DUPLICATE_TRANSACTION_MESSAGE,
+        });
+        continue;
+      }
+
+      const existingDup = await findDuplicateTransaction(dupInput);
+      if (existingDup) {
+        errors.push({
+          row: item.index + 1,
+          utr: payoutUtr,
+          error: DUPLICATE_TRANSACTION_MESSAGE,
+        });
+        continue;
+      }
+
+      const built = buildWithdrawalImportInsertDoc(
+        item.row,
+        actorOid,
+        { bankById, personById, playerById },
+        importTimeZone,
+      );
       if ("error" in built && typeof built.error === "string") {
         errors.push({
           row: item.index + 1,
@@ -1029,7 +1115,7 @@ export async function applyWithdrawalImportRows(
         continue;
       }
 
-      jobPayoutUtrSet.add(normalizedUtr);
+      seenDuplicateKeys.add(dupKey);
       pendingInserts.push({ doc: built, item });
     }
 
@@ -1054,8 +1140,8 @@ export async function applyWithdrawalImportRows(
           for (const we of err.writeErrors ?? []) {
             const pending = pendingInserts[we.index];
             if (!pending) continue;
-            const rowPayoutUtr = pending.item.row.payoutUtr?.trim();
-            if (rowPayoutUtr) jobPayoutUtrSet.delete(normalizeUtr(rowPayoutUtr));
+            const dupKey = withdrawalImportDuplicateKeyFromRow(pending.item.row, importTimeZone);
+            if (dupKey) seenDuplicateKeys.delete(dupKey);
             errors.push({
               row: pending.item.index + 1,
               utr: withdrawalImportRowIdentifier(pending.item.row),
@@ -1064,8 +1150,8 @@ export async function applyWithdrawalImportRows(
           }
         } else {
           for (const pending of pendingInserts) {
-            const rowPayoutUtr = pending.item.row.payoutUtr?.trim();
-            if (rowPayoutUtr) jobPayoutUtrSet.delete(normalizeUtr(rowPayoutUtr));
+            const dupKey = withdrawalImportDuplicateKeyFromRow(pending.item.row, importTimeZone);
+            if (dupKey) seenDuplicateKeys.delete(dupKey);
             errors.push({
               row: pending.item.index + 1,
               utr: withdrawalImportRowIdentifier(pending.item.row),

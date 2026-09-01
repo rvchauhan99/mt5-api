@@ -49,8 +49,7 @@ import { decodeTimeCursor, encodeTimeCursor } from "../../shared/utils/cursorPag
 import { enqueueExchangeRecompute } from "../../shared/queue/queue";
 import { invalidateCacheDomains } from "../../shared/cache/domainCache";
 import { logger } from "../../shared/logger";
-import { WithdrawalModel } from "../withdrawal/withdrawal.model";
-import { escapeRegex as escapeUtrRegex, normalizeUtr } from "../../shared/utils/utr";
+import { normalizeUtr } from "../../shared/utils/utr";
 import { createLiabilityEntry, deleteLiabilityEntryForReversal } from "../liability/liability.service";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
 import { chunkArray } from "../../shared/utils/chunkArray";
@@ -58,6 +57,12 @@ import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency, 
 import { getCurrencyMinUnit, isSupportedCurrency, type SupportedCurrency } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 import { resolveMasterExchangeRate } from "../lookup/exchange-rate-lookup.service";
+import {
+  buildTransactionDuplicateKey,
+  DUPLICATE_TRANSACTION_MESSAGE,
+  ensureNoDuplicateTransaction,
+  findDuplicateTransaction,
+} from "../../shared/utils/transactionDuplicate";
 
 export const DEPOSIT_IMPORT_CHUNK_SIZE = 100;
 
@@ -71,12 +76,50 @@ type CreateDepositInput = CreateDepositBody & {
   playerMongoId?: string;
   totalAmount?: number;
 };
-type DuplicateTransactionContext = {
-  type: "deposit" | "withdrawal";
-  id: string;
-  status: string;
-  dateTime: Date;
-};
+
+type DepositServiceOptions = { timeZone?: string };
+
+async function assertDepositTransactionNotDuplicate(params: {
+  playerId: string | Types.ObjectId;
+  settlementType: "bank" | "person";
+  settlementAccountId: string | Types.ObjectId;
+  amount: number;
+  transactionAt: Date;
+  utr: string;
+  timeZone?: string;
+  excludeDepositId?: Types.ObjectId;
+}) {
+  await ensureNoDuplicateTransaction({
+    playerId: params.playerId,
+    settlementType: params.settlementType,
+    settlementAccountId: params.settlementAccountId,
+    amount: params.amount,
+    transactionAt: params.transactionAt,
+    utr: params.utr,
+    timeZone: params.timeZone ?? DEFAULT_TIMEZONE,
+    excludeDepositId: params.excludeDepositId,
+  });
+}
+
+function buildDepositDuplicateKey(params: {
+  playerId: string | Types.ObjectId;
+  settlementType: "bank" | "person";
+  settlementAccountId: string | Types.ObjectId;
+  amount: number;
+  transactionAt: Date;
+  utr: string;
+  timeZone?: string;
+}): string {
+  return buildTransactionDuplicateKey({
+    playerId: params.playerId,
+    settlementType: params.settlementType,
+    settlementAccountId: params.settlementAccountId,
+    amount: params.amount,
+    transactionAt: params.transactionAt,
+    utr: params.utr,
+    timeZone: params.timeZone ?? DEFAULT_TIMEZONE,
+  });
+}
 
 function pageSizeFromQuery(q: ListDepositQuery): number {
   return q.limit ?? q.pageSize;
@@ -325,62 +368,6 @@ function bankDisplayName(b: { holderName: string; bankName: string; accountNumbe
   return formatBankDisplayName(b);
 }
 
-/** UTR must be unique among non-rejected deposits; rejected rows do not block reuse. */
-async function utrConflictsWithNonRejected(utr: string, excludeId?: Types.ObjectId) {
-  const normalized = normalizeUtr(utr);
-  const filter: { utr: { $regex: string; $options: string }; status: { $ne: string }; _id?: { $ne: Types.ObjectId } } = {
-    utr: { $regex: `^${escapeUtrRegex(normalized)}$`, $options: "i" },
-    status: { $ne: "rejected" },
-  };
-  if (excludeId) {
-    filter._id = { $ne: excludeId };
-  }
-  return DepositModel.findOne(filter).select({ _id: 1, status: 1, entryAt: 1, createdAt: 1 }).lean();
-}
-
-async function utrConflictsWithWithdrawalNonRejected(utr: string, excludeWithdrawalId?: Types.ObjectId) {
-  const normalized = normalizeUtr(utr);
-  const filter: {
-    utr: { $regex: string; $options: string };
-    status: { $ne: string };
-    _id?: { $ne: Types.ObjectId };
-  } = {
-    utr: { $regex: `^${escapeUtrRegex(normalized)}$`, $options: "i" },
-    status: { $ne: "rejected" },
-  };
-  if (excludeWithdrawalId) {
-    filter._id = { $ne: excludeWithdrawalId };
-  }
-  return WithdrawalModel.findOne(filter).select({ _id: 1, status: 1, requestedAt: 1, createdAt: 1 }).lean();
-}
-
-async function ensureGlobalUtrUniqueForDeposit(utr: string, excludeDepositId?: Types.ObjectId) {
-  const [depositConflict, withdrawalConflict] = await Promise.all([
-    utrConflictsWithNonRejected(utr, excludeDepositId),
-    utrConflictsWithWithdrawalNonRejected(utr),
-  ]);
-  if (depositConflict || withdrawalConflict) {
-    const duplicateTransaction: DuplicateTransactionContext | null = depositConflict
-      ? {
-          type: "deposit",
-          id: String(depositConflict._id),
-          status: String(depositConflict.status ?? ""),
-          dateTime: (depositConflict.entryAt as Date | undefined) ?? (depositConflict.createdAt as Date),
-        }
-      : withdrawalConflict
-        ? {
-            type: "withdrawal",
-            id: String(withdrawalConflict._id),
-            status: String(withdrawalConflict.status ?? ""),
-            dateTime: (withdrawalConflict.requestedAt as Date | undefined) ?? (withdrawalConflict.createdAt as Date),
-          }
-        : null;
-    throw new AppError("business_rule_error", "UTR already exists in another transaction", 409, {
-      duplicateTransaction,
-    });
-  }
-}
-
 async function resolveImportPlayerFields(input: CreateDepositInput): Promise<{
   player?: Types.ObjectId;
   bonusAmount?: number;
@@ -411,8 +398,12 @@ async function resolveImportPlayerFields(input: CreateDepositInput): Promise<{
   };
 }
 
-export async function createDeposit(input: CreateDepositInput, actorId: string, requestId?: string) {
-  await ensureGlobalUtrUniqueForDeposit(input.utr);
+export async function createDeposit(
+  input: CreateDepositInput,
+  actorId: string,
+  requestId?: string,
+  options?: DepositServiceOptions,
+) {
   const mode = input.settlementAccountType ?? "bank";
   const platformCurrency = await requirePlatformCurrency();
   const money = await resolveMoneyFromRequest(
@@ -434,6 +425,31 @@ export async function createDeposit(input: CreateDepositInput, actorId: string, 
     throw new AppError("validation_error", "Invalid bonus amount", 400);
   }
 
+  const entryAt = parseBusinessDateTime(input.entryAt, "entryAt");
+  const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+  const settlementAccountId =
+    mode === "bank" ? (input.bankId as string) : (input.liabilityPersonId as string);
+
+  await assertDepositTransactionNotDuplicate({
+    playerId,
+    settlementType: mode,
+    settlementAccountId,
+    amount: money.amount,
+    transactionAt: entryAt,
+    utr: input.utr,
+    timeZone,
+  });
+
+  const duplicateKey = buildDepositDuplicateKey({
+    playerId,
+    settlementType: mode,
+    settlementAccountId,
+    amount: money.amount,
+    transactionAt: entryAt,
+    utr: input.utr,
+    timeZone,
+  });
+
   const base = {
     utr: normalizeUtr(input.utr),
     amount: money.amount,
@@ -441,9 +457,10 @@ export async function createDeposit(input: CreateDepositInput, actorId: string, 
     operatedAmount: money.operatedAmount,
     exchangeRate: money.exchangeRate,
     status: "pending" as const,
-    entryAt: parseBusinessDateTime(input.entryAt, "entryAt"),
+    entryAt,
     createdBy: new Types.ObjectId(actorId),
     settlementAccountType: mode as "bank" | "person",
+    duplicateKey,
   };
 
   let doc;
@@ -529,7 +546,13 @@ export async function createDeposit(input: CreateDepositInput, actorId: string, 
   }
 }
 
-export async function updateDepositByBanker(id: string, input: BankerDepositUpdateInput, actorId: string, requestId?: string) {
+export async function updateDepositByBanker(
+  id: string,
+  input: BankerDepositUpdateInput,
+  actorId: string,
+  requestId?: string,
+  options?: DepositServiceOptions,
+) {
   const doc = await DepositModel.findById(id);
   if (!doc) throw new AppError("not_found", "Deposit not found", 404);
   if (doc.status !== "pending") {
@@ -537,10 +560,6 @@ export async function updateDepositByBanker(id: string, input: BankerDepositUpda
   }
 
   const utrTrim = normalizeUtr(input.utr);
-  if (utrTrim !== normalizeUtr(doc.utr)) {
-    await ensureGlobalUtrUniqueForDeposit(utrTrim, doc._id);
-  }
-
   const platformCurrency = await requirePlatformCurrency();
   const money = await resolveMoneyFromRequest(
     {
@@ -553,6 +572,23 @@ export async function updateDepositByBanker(id: string, input: BankerDepositUpda
   );
 
   const mode = input.settlementAccountType ?? "bank";
+  const settlementAccountId =
+    mode === "bank" ? (input.bankId as string) : (input.liabilityPersonId as string);
+  const transactionAt = doc.entryAt ?? doc.createdAt;
+  const playerIdForDup = doc.player;
+  if (playerIdForDup) {
+    await assertDepositTransactionNotDuplicate({
+      playerId: playerIdForDup,
+      settlementType: mode,
+      settlementAccountId,
+      amount: money.amount,
+      transactionAt,
+      utr: utrTrim,
+      timeZone: options?.timeZone ?? DEFAULT_TIMEZONE,
+      excludeDepositId: doc._id,
+    });
+  }
+
   const prev = {
     settlementAccountType: doc.settlementAccountType,
     bankId: doc.bankId?.toString(),
@@ -595,6 +631,18 @@ export async function updateDepositByBanker(id: string, input: BankerDepositUpda
   doc.operatedCurrency = money.operatedCurrency;
   doc.operatedAmount = money.operatedAmount;
   doc.exchangeRate = money.exchangeRate;
+  if (playerIdForDup) {
+    doc.duplicateKey = buildDepositDuplicateKey({
+      playerId: playerIdForDup,
+      settlementType: mode,
+      settlementAccountId:
+        mode === "bank" ? String(doc.bankId) : String(doc.liabilityPersonId),
+      amount: money.amount,
+      transactionAt: doc.entryAt ?? doc.createdAt,
+      utr: utrTrim,
+      timeZone: options?.timeZone ?? DEFAULT_TIMEZONE,
+    });
+  }
   await doc.save();
 
   await createAuditLog({
@@ -1356,6 +1404,7 @@ async function amendVerifiedDepositPersonSettlement(
   input: AmendDepositInput,
   actorId: string,
   requestId?: string,
+  options?: DepositServiceOptions,
 ) {
   if (!doc.liabilityPersonId) {
     throw new AppError("business_rule_error", "Deposit has no liability person linked", 400);
@@ -1365,9 +1414,6 @@ async function amendVerifiedDepositPersonSettlement(
   }
 
   const utrTrim = normalizeUtr(input.utr);
-  if (utrTrim !== normalizeUtr(doc.utr)) {
-    await ensureGlobalUtrUniqueForDeposit(utrTrim, doc._id);
-  }
 
   const newPlayerDoc = await PlayerModel.findById(input.playerId).select("exchange");
   if (!newPlayerDoc) throw new AppError("not_found", "Player not found", 404);
@@ -1396,6 +1442,17 @@ async function amendVerifiedDepositPersonSettlement(
   const amendReasonText = composeRejectReasonText(resolved.masterText, input.remark);
 
   const lpIdStr = doc.liabilityPersonId.toString();
+  const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+  await assertDepositTransactionNotDuplicate({
+    playerId: input.playerId,
+    settlementType: "person",
+    settlementAccountId: lpIdStr,
+    amount: money.amount,
+    transactionAt: nextEntryAt ?? doc.entryAt ?? doc.createdAt,
+    utr: utrTrim,
+    timeZone,
+    excludeDepositId: doc._id,
+  });
   const lpName = String(doc.liabilityPersonName ?? "").trim();
 
   const needsLiabilityRefresh =
@@ -1453,6 +1510,15 @@ async function amendVerifiedDepositPersonSettlement(
   doc.bonusAmount = bonusPlatform;
   doc.totalAmount = totalAmount;
   doc.entryAt = nextEntryAt;
+  doc.duplicateKey = buildDepositDuplicateKey({
+    playerId: input.playerId,
+    settlementType: "person",
+    settlementAccountId: lpIdStr,
+    amount: money.amount,
+    transactionAt: nextEntryAt ?? doc.entryAt ?? doc.createdAt,
+    utr: utrTrim,
+    timeZone,
+  });
   doc.bankBalanceAfter = undefined;
   doc.bankImpact = false;
   doc.amendmentCount = prevAmendCount + 1;
@@ -1581,6 +1647,7 @@ export async function amendVerifiedDeposit(
   input: AmendDepositInput,
   actorId: string,
   requestId?: string,
+  options?: DepositServiceOptions,
 ) {
   const doc = await DepositModel.findById(id);
   if (!doc) throw new AppError("not_found", "Deposit not found", 404);
@@ -1592,7 +1659,7 @@ export async function amendVerifiedDeposit(
   const isPersonSettlement = doc.settlementAccountType === "person";
 
   if (isPersonSettlement) {
-    return amendVerifiedDepositPersonSettlement(doc as HydratedDepositDoc, input, actorId, requestId);
+    return amendVerifiedDepositPersonSettlement(doc as HydratedDepositDoc, input, actorId, requestId, options);
   }
 
   if (!input.bankId) {
@@ -1606,9 +1673,6 @@ export async function amendVerifiedDeposit(
   }
 
   const utrTrim = normalizeUtr(input.utr);
-  if (utrTrim !== normalizeUtr(doc.utr)) {
-    await ensureGlobalUtrUniqueForDeposit(utrTrim, doc._id);
-  }
 
   const newBankDoc = await BankModel.findById(input.bankId);
   if (!newBankDoc) throw new AppError("not_found", "Bank not found", 404);
@@ -1639,6 +1703,17 @@ export async function amendVerifiedDeposit(
   const nextEntryAt = input.entryAt ? parseBusinessDateTime(input.entryAt, "entryAt") : doc.entryAt;
   const resolved = await loadActiveReasonForReject(input.reasonId, REASON_TYPES.DEPOSIT_FINAL_AMEND);
   const amendReasonText = composeRejectReasonText(resolved.masterText, input.remark);
+  const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+  await assertDepositTransactionNotDuplicate({
+    playerId: input.playerId,
+    settlementType: "bank",
+    settlementAccountId: input.bankId,
+    amount: money.amount,
+    transactionAt: nextEntryAt ?? doc.entryAt ?? doc.createdAt,
+    utr: utrTrim,
+    timeZone,
+    excludeDepositId: doc._id,
+  });
 
   const oldBankId = doc.bankId;
   const oldAmount = doc.amount;
@@ -1728,6 +1803,15 @@ export async function amendVerifiedDeposit(
     doc.bonusAmount = bonusPlatform;
     doc.totalAmount = totalAmount;
     doc.entryAt = nextEntryAt;
+    doc.duplicateKey = buildDepositDuplicateKey({
+      playerId: input.playerId,
+      settlementType: "bank",
+      settlementAccountId: input.bankId,
+      amount: money.amount,
+      transactionAt: nextEntryAt ?? doc.entryAt ?? doc.createdAt,
+      utr: utrTrim,
+      timeZone,
+    });
     doc.bankBalanceAfter = newBankBalanceAfter;
     doc.amendmentCount = (doc.amendmentCount ?? 0) + 1;
     doc.lastAmendedAt = new Date();
@@ -2144,24 +2228,7 @@ export async function validateDepositImportRows(
   const personResolutionCache = buildPersonResolutionCache(uniquePersonNames, personMap);
   const exchangePlayerResolutionCache = buildExchangePlayerResolutionCache(uniquePlayerIds, exchangePlayerMap);
 
-  const seenUtrs = new Set<string>();
-  const existingUtrChecks = rowDataList.map((r) => r.utr).filter(Boolean);
-  const existingUtrConflicts = new Set<string>();
-  if (existingUtrChecks.length > 0) {
-    const normalizedUtrs = [...new Set(existingUtrChecks.map((u) => normalizeUtr(u)))];
-    const [depConflicts, wdConflicts] = await Promise.all([
-      DepositModel.find({
-        utr: { $in: normalizedUtrs.map((u) => new RegExp(`^${escapeUtrRegex(u)}$`, "i")) },
-        status: { $ne: "rejected" },
-      }).select({ utr: 1 }).lean(),
-      WithdrawalModel.find({
-        utr: { $in: normalizedUtrs.map((u) => new RegExp(`^${escapeUtrRegex(u)}$`, "i")) },
-        status: { $ne: "rejected" },
-      }).select({ utr: 1 }).lean(),
-    ]);
-    for (const d of depConflicts) existingUtrConflicts.add(normalizeUtr(d.utr));
-    for (const w of wdConflicts) if (w.utr) existingUtrConflicts.add(normalizeUtr(w.utr));
-  }
+  const seenDuplicateKeys = new Set<string>();
 
   for (const rd of rowDataList) {
     const rowErrors: string[] = [];
@@ -2173,15 +2240,6 @@ export async function validateDepositImportRows(
       rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} must be at least 4 characters`);
     } else if (rd.utr.length > 120) {
       rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} must not exceed 120 characters`);
-    } else {
-      const normalized = normalizeUtr(rd.utr);
-      if (existingUtrConflicts.has(normalized)) {
-        rowErrors.push(`${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} already exists in another transaction`);
-      } else if (seenUtrs.has(normalized)) {
-        rowErrors.push(`Duplicate ${DEPOSIT_IMPORT_CSV_COLUMNS.referenceNumber} within this file`);
-      } else {
-        seenUtrs.add(normalized);
-      }
     }
 
     const moneyResult = await resolveDepositImportRowMoney(
@@ -2295,6 +2353,47 @@ export async function validateDepositImportRows(
         }),
       );
     } else if (moneyResult.ok) {
+      const settlementAccountId = mode === "bank" ? resolvedBankId! : resolvedPersonId!;
+      const transactionAt = parsedDate ?? new Date();
+      const dupInput = {
+        playerId: resolvedPlayerMongoId!,
+        settlementType: mode,
+        settlementAccountId,
+        amount: platformAmount!,
+        transactionAt,
+        utr: rd.utr,
+        timeZone: importTimeZone,
+      };
+      const dupKey = buildTransactionDuplicateKey(dupInput);
+      if (seenDuplicateKeys.has(dupKey)) {
+        rowErrors.push(`Duplicate transaction within this file (${DUPLICATE_TRANSACTION_MESSAGE.toLowerCase()})`);
+      } else {
+        const existingDup = await findDuplicateTransaction(dupInput);
+        if (existingDup) {
+          rowErrors.push(DUPLICATE_TRANSACTION_MESSAGE);
+        } else {
+          seenDuplicateKeys.add(dupKey);
+        }
+      }
+
+      if (rowErrors.length > 0) {
+        invalidRows.push(
+          makeDepositImportInvalidRow({
+            row: rd.rowNum,
+            dateTime: formatImportDateTimeForDisplay(rd.dateTimeValue),
+            settlementType: rd.settlementType || "Bank",
+            bankAccountNumber: rd.bankIdentifier,
+            liablePersonName: rd.personName,
+            operatedCurrency: rd.operatedCurrencyRaw,
+            amount: rd.amountRaw,
+            exchangeRate: String(moneyResult.exchangeRate),
+            platformAmount: platformAmount != null ? String(platformAmount) : "",
+            playerId: rd.playerIdRaw,
+            utr: rd.utr,
+            errors: rowErrors,
+          }),
+        );
+      } else {
       validRows.push({
         row: rd.rowNum,
         utr: rd.utr,
@@ -2314,6 +2413,7 @@ export async function validateDepositImportRows(
         bonusAmount: resolvedBonusAmount,
         totalAmount: resolvedTotalAmount,
       });
+      }
     }
   }
 
@@ -2389,30 +2489,13 @@ async function loadDepositImportLookups(rows: DepositImportCommitRow[]) {
   };
 }
 
-async function findConflictingUtrsInDb(utrs: string[]): Promise<Set<string>> {
-  const normalized = [...new Set(utrs.map((u) => normalizeUtr(u)).filter(Boolean))];
-  if (normalized.length === 0) return new Set();
-  const utrMatchers = normalized.map((u) => new RegExp(`^${escapeUtrRegex(u)}$`, "i"));
-  const [depConflicts, wdConflicts] = await Promise.all([
-    DepositModel.find({ utr: { $in: utrMatchers }, status: { $ne: "rejected" } })
-      .select({ utr: 1 })
-      .lean(),
-    WithdrawalModel.find({ utr: { $in: utrMatchers }, status: { $ne: "rejected" } })
-      .select({ utr: 1 })
-      .lean(),
-  ]);
-  const conflicts = new Set<string>();
-  for (const d of depConflicts) conflicts.add(normalizeUtr(d.utr));
-  for (const w of wdConflicts) if (w.utr) conflicts.add(normalizeUtr(w.utr));
-  return conflicts;
-}
-
 function buildDepositImportInsertDoc(
   row: DepositImportCommitRow,
   actorOid: Types.ObjectId,
   bankById: Map<string, BankImportLean>,
   personById: Map<string, PersonImportLean>,
   platformCurrency: SupportedCurrency,
+  importTimeZone: string,
 ): Record<string, unknown> | { error: string; ok?: false } {
   let money: ReturnType<typeof resolveMoneyInput>;
   try {
@@ -2433,6 +2516,7 @@ function buildDepositImportInsertDoc(
   }
 
   const mode = row.settlementAccountType ?? "bank";
+  const entryAt = row.entryAt ? parseBusinessDateTime(row.entryAt, "entryAt") : new Date();
   const base: Record<string, unknown> = {
     utr: normalizeUtr(row.utr),
     amount: money.amount,
@@ -2440,7 +2524,7 @@ function buildDepositImportInsertDoc(
     operatedAmount: money.operatedAmount,
     exchangeRate: money.exchangeRate,
     status: "pending",
-    entryAt: row.entryAt ? parseBusinessDateTime(row.entryAt, "entryAt") : new Date(),
+    entryAt,
     createdBy: actorOid,
     settlementAccountType: mode,
     amendmentCount: 0,
@@ -2462,6 +2546,17 @@ function buildDepositImportInsertDoc(
     const bank = bankById.get(bankIdStr);
     if (!bank) return { error: "Bank not found" };
     if (bank.status !== "active") return { error: "Bank is not active" };
+    if (row.playerMongoId?.trim()) {
+      base.duplicateKey = buildTransactionDuplicateKey({
+        playerId: row.playerMongoId,
+        settlementType: "bank",
+        settlementAccountId: bankIdStr,
+        amount: money.amount,
+        transactionAt: entryAt,
+        utr: row.utr,
+        timeZone: importTimeZone,
+      });
+    }
     return {
       ...base,
       bankId: new Types.ObjectId(bankIdStr),
@@ -2475,6 +2570,17 @@ function buildDepositImportInsertDoc(
   const person = personById.get(personIdStr);
   if (!person) return { error: "Liability person not found" };
   if (!person.isActive) return { error: "Liability person is inactive" };
+  if (row.playerMongoId?.trim()) {
+    base.duplicateKey = buildTransactionDuplicateKey({
+      playerId: row.playerMongoId,
+      settlementType: "person",
+      settlementAccountId: personIdStr,
+      amount: money.amount,
+      transactionAt: entryAt,
+      utr: row.utr,
+      timeZone: importTimeZone,
+    });
+  }
   return {
     ...base,
     liabilityPersonId: new Types.ObjectId(personIdStr),
@@ -2497,7 +2603,7 @@ function isMongooseBulkWriteError(err: unknown): err is {
 }
 
 function bulkWriteErrorMessage(writeError: { errmsg?: string; code?: number }): string {
-  if (writeError.code === 11000) return "Reference Number already exists in another transaction";
+  if (writeError.code === 11000) return DUPLICATE_TRANSACTION_MESSAGE;
   return writeError.errmsg || "Insert failed";
 }
 
@@ -2506,16 +2612,18 @@ export async function applyDepositImportRows(
   actorId: string,
   options?: {
     chunkSize?: number;
+    timeZone?: string;
     onProgress?: (progress: DepositImportCommitProgress) => Promise<void> | void;
   },
 ): Promise<{ created: number; errors: DepositImportCommitError[]; createdIds: string[] }> {
   const actorOid = new Types.ObjectId(actorId);
   const chunkSize = options?.chunkSize ?? DEPOSIT_IMPORT_CHUNK_SIZE;
+  const importTimeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
   const totalRows = rows.length;
   let created = 0;
   const errors: DepositImportCommitError[] = [];
   const createdIds: string[] = [];
-  const jobUtrSet = new Set<string>();
+  const seenDuplicateKeys = new Set<string>();
   const platformCurrency = await requirePlatformCurrency();
 
   const indexedRows: IndexedDepositImportRow[] = rows.map((row, index) => ({ index, row }));
@@ -2524,34 +2632,72 @@ export async function applyDepositImportRows(
   let processedRows = 0;
 
   for (const chunk of chunks) {
-    const chunkUtrs = chunk.map((c) => c.row.utr).filter(Boolean);
-    const dbConflicts = await findConflictingUtrsInDb(chunkUtrs);
-
     const pendingInserts: Array<{ doc: Record<string, unknown>; item: IndexedDepositImportRow }> = [];
 
     for (const item of chunk) {
-      const normalizedUtr = normalizeUtr(item.row.utr);
-      if (dbConflicts.has(normalizedUtr) || jobUtrSet.has(normalizedUtr)) {
-        errors.push({
-          row: item.index + 1,
-          utr: item.row.utr,
-          error: "Reference Number already exists in another transaction",
-        });
-        continue;
-      }
-
       if (!item.row.playerMongoId?.trim()) {
         errors.push({ row: item.index + 1, utr: item.row.utr, error: "Player is required" });
         continue;
       }
 
-      const built = buildDepositImportInsertDoc(item.row, actorOid, bankById, personById, platformCurrency);
+      const mode = item.row.settlementAccountType ?? "bank";
+      const settlementAccountId =
+        mode === "bank" ? item.row.bankId?.trim() : item.row.liabilityPersonId?.trim();
+      if (!settlementAccountId) {
+        errors.push({
+          row: item.index + 1,
+          utr: item.row.utr,
+          error: mode === "bank" ? "Bank is required" : "Liability person is required",
+        });
+        continue;
+      }
+
+      const entryAt = item.row.entryAt
+        ? parseBusinessDateTime(item.row.entryAt, "entryAt")
+        : new Date();
+      const dupInput = {
+        playerId: item.row.playerMongoId,
+        settlementType: mode as "bank" | "person",
+        settlementAccountId,
+        amount: item.row.amount,
+        transactionAt: entryAt,
+        utr: item.row.utr,
+        timeZone: importTimeZone,
+      };
+      const dupKey = buildTransactionDuplicateKey(dupInput);
+      if (seenDuplicateKeys.has(dupKey)) {
+        errors.push({
+          row: item.index + 1,
+          utr: item.row.utr,
+          error: DUPLICATE_TRANSACTION_MESSAGE,
+        });
+        continue;
+      }
+
+      const existingDup = await findDuplicateTransaction(dupInput);
+      if (existingDup) {
+        errors.push({
+          row: item.index + 1,
+          utr: item.row.utr,
+          error: DUPLICATE_TRANSACTION_MESSAGE,
+        });
+        continue;
+      }
+
+      const built = buildDepositImportInsertDoc(
+        item.row,
+        actorOid,
+        bankById,
+        personById,
+        platformCurrency,
+        importTimeZone,
+      );
       if ("error" in built && typeof built.error === "string") {
         errors.push({ row: item.index + 1, utr: item.row.utr, error: built.error });
         continue;
       }
 
-      jobUtrSet.add(normalizedUtr);
+      seenDuplicateKeys.add(dupKey);
       pendingInserts.push({ doc: built, item });
     }
 
@@ -2576,7 +2722,21 @@ export async function applyDepositImportRows(
           for (const we of err.writeErrors ?? []) {
             const pending = pendingInserts[we.index];
             if (!pending) continue;
-            jobUtrSet.delete(normalizeUtr(pending.item.row.utr));
+            const builtKey = buildTransactionDuplicateKey({
+              playerId: pending.item.row.playerMongoId!,
+              settlementType: (pending.item.row.settlementAccountType ?? "bank") as "bank" | "person",
+              settlementAccountId:
+                (pending.item.row.settlementAccountType ?? "bank") === "bank"
+                  ? pending.item.row.bankId!
+                  : pending.item.row.liabilityPersonId!,
+              amount: pending.item.row.amount,
+              transactionAt: pending.item.row.entryAt
+                ? parseBusinessDateTime(pending.item.row.entryAt, "entryAt")
+                : new Date(),
+              utr: pending.item.row.utr,
+              timeZone: importTimeZone,
+            });
+            seenDuplicateKeys.delete(builtKey);
             errors.push({
               row: pending.item.index + 1,
               utr: pending.item.row.utr,
@@ -2585,7 +2745,21 @@ export async function applyDepositImportRows(
           }
         } else {
           for (const pending of pendingInserts) {
-            jobUtrSet.delete(normalizeUtr(pending.item.row.utr));
+            const builtKey = buildTransactionDuplicateKey({
+              playerId: pending.item.row.playerMongoId!,
+              settlementType: (pending.item.row.settlementAccountType ?? "bank") as "bank" | "person",
+              settlementAccountId:
+                (pending.item.row.settlementAccountType ?? "bank") === "bank"
+                  ? pending.item.row.bankId!
+                  : pending.item.row.liabilityPersonId!,
+              amount: pending.item.row.amount,
+              transactionAt: pending.item.row.entryAt
+                ? parseBusinessDateTime(pending.item.row.entryAt, "entryAt")
+                : new Date(),
+              utr: pending.item.row.utr,
+              timeZone: importTimeZone,
+            });
+            seenDuplicateKeys.delete(builtKey);
             errors.push({
               row: pending.item.index + 1,
               utr: pending.item.row.utr,
@@ -2643,11 +2817,13 @@ export async function commitDepositImportRows(
   requestId?: string,
   options?: {
     chunkSize?: number;
+    timeZone?: string;
     onProgress?: (progress: DepositImportCommitProgress) => Promise<void> | void;
   },
 ): Promise<{ created: number; errors: DepositImportCommitError[] }> {
   const result = await applyDepositImportRows(rows, actorId, {
     chunkSize: options?.chunkSize ?? DEPOSIT_IMPORT_CHUNK_SIZE,
+    timeZone: options?.timeZone,
     onProgress: options?.onProgress,
   });
 

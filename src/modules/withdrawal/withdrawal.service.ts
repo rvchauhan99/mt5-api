@@ -7,7 +7,6 @@ import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
 import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
 import { computeClosingBalanceActualByBankIds } from "../bank/bankClosingBalance";
-import { DepositModel } from "../deposit/deposit.model";
 import { ExpenseModel } from "../expense/expense.model";
 import { LiabilityEntryModel } from "../liability/liability-entry.model";
 import { PlayerModel } from "../player/player.model";
@@ -35,21 +34,20 @@ import { decodeTimeCursor, encodeTimeCursor } from "../../shared/utils/cursorPag
 import { enqueueExchangeRecompute } from "../../shared/queue/queue";
 import { invalidateCacheDomains } from "../../shared/cache/domainCache";
 import { logger } from "../../shared/logger";
-import { escapeRegex as escapeUtrRegex, normalizeUtr } from "../../shared/utils/utr";
+import { normalizeUtr } from "../../shared/utils/utr";
 import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency } from "../../shared/utils/moneyFx";
 import { getCurrencyMinUnit } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
+import {
+  buildTransactionDuplicateKey,
+  ensureNoDuplicateTransaction,
+} from "../../shared/utils/transactionDuplicate";
 
 type ListWithdrawalQuery = z.infer<typeof listWithdrawalQuerySchema>;
 type ExportWithdrawalQuery = z.infer<typeof exportWithdrawalQuerySchema>;
 type AmendWithdrawalInput = z.infer<typeof amendWithdrawalBodySchema>;
 type BankerPayoutInput = z.infer<typeof withdrawalBankerPayoutBodySchema>;
-type DuplicateTransactionContext = {
-  type: "deposit" | "withdrawal";
-  id: string;
-  status: string;
-  dateTime: Date;
-};
+type WithdrawalServiceOptions = { timeZone?: string };
 
 function pageSizeFromQuery(q: ListWithdrawalQuery): number {
   return q.limit ?? q.pageSize;
@@ -72,55 +70,6 @@ function parseBusinessDateTime(value: string | undefined, fieldName: string): Da
     throw new AppError("validation_error", `${fieldName} must be a valid datetime`, 400);
   }
   return parsed;
-}
-
-async function utrConflictsWithNonRejectedDeposit(utr: string) {
-  const normalized = normalizeUtr(utr);
-  return DepositModel.findOne({
-    utr: { $regex: `^${escapeUtrRegex(normalized)}$`, $options: "i" },
-    status: { $ne: "rejected" },
-  })
-    .select({ _id: 1, status: 1, entryAt: 1, createdAt: 1 })
-    .lean();
-}
-
-async function utrConflictsWithNonRejectedWithdrawal(utr: string, excludeId?: Types.ObjectId) {
-  const normalized = normalizeUtr(utr);
-  const filter: { utr: { $regex: string; $options: string }; status: { $ne: string }; _id?: { $ne: Types.ObjectId } } = {
-    utr: { $regex: `^${escapeUtrRegex(normalized)}$`, $options: "i" },
-    status: { $ne: "rejected" },
-  };
-  if (excludeId) {
-    filter._id = { $ne: excludeId };
-  }
-  return WithdrawalModel.findOne(filter).select({ _id: 1, status: 1, requestedAt: 1, createdAt: 1 }).lean();
-}
-
-async function ensureGlobalUtrUniqueForWithdrawal(utr: string, excludeWithdrawalId?: Types.ObjectId) {
-  const [depositConflict, withdrawalConflict] = await Promise.all([
-    utrConflictsWithNonRejectedDeposit(utr),
-    utrConflictsWithNonRejectedWithdrawal(utr, excludeWithdrawalId),
-  ]);
-  if (depositConflict || withdrawalConflict) {
-    const duplicateTransaction: DuplicateTransactionContext | null = depositConflict
-      ? {
-          type: "deposit",
-          id: String(depositConflict._id),
-          status: String(depositConflict.status ?? ""),
-          dateTime: (depositConflict.entryAt as Date | undefined) ?? (depositConflict.createdAt as Date),
-        }
-      : withdrawalConflict
-        ? {
-            type: "withdrawal",
-            id: String(withdrawalConflict._id),
-            status: String(withdrawalConflict.status ?? ""),
-            dateTime: (withdrawalConflict.requestedAt as Date | undefined) ?? (withdrawalConflict.createdAt as Date),
-          }
-        : null;
-    throw new AppError("business_rule_error", "UTR already exists in another transaction", 409, {
-      duplicateTransaction,
-    });
-  }
 }
 
 function textFieldCondition(field: string, value: string, op: string | undefined): Record<string, unknown> {
@@ -424,6 +373,7 @@ export async function createWithdrawal(
   },
   actorId: string,
   requestId?: string,
+  options?: WithdrawalServiceOptions,
 ) {
   const player = await PlayerModel.findById(input.playerId);
   if (!player) throw new AppError("not_found", "Player not found", 404);
@@ -509,6 +459,7 @@ export async function createWithdrawal(
       },
       actorId,
       requestId,
+      { timeZone: options?.timeZone },
     );
   } catch (err) {
     await WithdrawalModel.deleteOne({ _id: doc._id }).catch(() => undefined);
@@ -630,6 +581,7 @@ export async function updateWithdrawalByExchange(
 
 export type BankerPayoutOptions = {
   deferSideEffects?: boolean;
+  timeZone?: string;
   bulkContext?: {
     exchangeIds: Set<string>;
     personSettlementSeen: boolean;
@@ -656,7 +608,6 @@ export async function updateWithdrawalByBanker(
     throw new AppError("validation_error", "Payout UTR is required", 400);
   }
   const utrTrim = normalizeUtr(utrRaw);
-  await ensureGlobalUtrUniqueForWithdrawal(utrTrim, doc._id);
 
   const prev = {
     payoutSettlementType: doc.payoutSettlementType,
@@ -681,6 +632,31 @@ export async function updateWithdrawalByBanker(
     if (!bank) throw new AppError("not_found", "Bank not found", 404);
     if (bank.status !== "active") throw new AppError("business_rule_error", "Bank is not active", 400);
 
+    if (!doc.player) {
+      throw new AppError("business_rule_error", "Withdrawal is missing player", 400);
+    }
+    const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+    const transactionAt = doc.requestedAt ?? doc.createdAt ?? new Date();
+    await ensureNoDuplicateTransaction({
+      playerId: doc.player,
+      settlementType: "bank",
+      settlementAccountId: bankIdStr,
+      amount: doc.amount,
+      transactionAt,
+      utr: utrTrim,
+      timeZone,
+      excludeWithdrawalId: doc._id,
+    });
+    const duplicateKey = buildTransactionDuplicateKey({
+      playerId: doc.player,
+      settlementType: "bank",
+      settlementAccountId: bankIdStr,
+      amount: doc.amount,
+      transactionAt,
+      utr: utrTrim,
+      timeZone,
+    });
+
     doc.payoutSettlementType = "bank";
     doc.payoutBankId = new Types.ObjectId(bankIdStr);
     doc.payoutBankName = bankDisplayName(bank);
@@ -688,6 +664,7 @@ export async function updateWithdrawalByBanker(
     doc.payoutLiabilityPersonName = "";
     doc.payoutLiabilityEntryId = undefined;
     doc.utr = utrTrim;
+    doc.duplicateKey = duplicateKey;
     doc.status = "approved";
     await doc.save();
   } else {
@@ -698,6 +675,31 @@ export async function updateWithdrawalByBanker(
     if (!person) throw new AppError("not_found", "Liability person not found", 404);
     if (!person.isActive) throw new AppError("business_rule_error", "Liability person is inactive", 400);
 
+    if (!doc.player) {
+      throw new AppError("business_rule_error", "Withdrawal is missing player", 400);
+    }
+    const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+    const transactionAt = doc.requestedAt ?? doc.createdAt ?? new Date();
+    await ensureNoDuplicateTransaction({
+      playerId: doc.player,
+      settlementType: "person",
+      settlementAccountId: personId,
+      amount: doc.amount,
+      transactionAt,
+      utr: utrTrim,
+      timeZone,
+      excludeWithdrawalId: doc._id,
+    });
+    const duplicateKey = buildTransactionDuplicateKey({
+      playerId: doc.player,
+      settlementType: "person",
+      settlementAccountId: personId,
+      amount: doc.amount,
+      transactionAt,
+      utr: utrTrim,
+      timeZone,
+    });
+
     doc.payoutSettlementType = "person";
     doc.payoutBankId = undefined;
     doc.payoutBankName = "";
@@ -705,6 +707,7 @@ export async function updateWithdrawalByBanker(
     doc.payoutLiabilityPersonName = person.name.trim();
     doc.payoutLiabilityEntryId = undefined;
     doc.utr = utrTrim;
+    doc.duplicateKey = duplicateKey;
     doc.status = "approved";
     await doc.save();
 
@@ -1193,15 +1196,13 @@ async function amendWithdrawalPersonSettlement(
   input: AmendWithdrawalInput,
   actorId: string,
   requestId?: string,
+  options?: WithdrawalServiceOptions,
 ) {
   if (!doc.payoutLiabilityPersonId) {
     throw new AppError("business_rule_error", "Withdrawal has no liability person linked", 400);
   }
 
   const utrTrim = normalizeUtr(input.utr);
-  if (utrTrim !== normalizeUtr(doc.utr ?? "")) {
-    await ensureGlobalUtrUniqueForWithdrawal(utrTrim, doc._id);
-  }
 
   const money = await resolveMoneyFromRequest(
     {
@@ -1229,6 +1230,20 @@ async function amendWithdrawalPersonSettlement(
 
   const lpIdStr = doc.payoutLiabilityPersonId.toString();
   const lpName = String(doc.payoutLiabilityPersonName ?? "").trim();
+  if (!doc.player) {
+    throw new AppError("business_rule_error", "Withdrawal is missing player", 400);
+  }
+  const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+  await ensureNoDuplicateTransaction({
+    playerId: doc.player,
+    settlementType: "person",
+    settlementAccountId: lpIdStr,
+    amount: money.amount,
+    transactionAt: nextRequestedAt ?? doc.requestedAt ?? doc.createdAt,
+    utr: utrTrim,
+    timeZone,
+    excludeWithdrawalId: doc._id,
+  });
 
   const needsLiabilityRefresh =
     newPayable !== oldPayable ||
@@ -1279,6 +1294,15 @@ async function amendWithdrawalPersonSettlement(
   doc.payableAmount = newPayable;
   doc.utr = utrTrim;
   doc.requestedAt = nextRequestedAt;
+  doc.duplicateKey = buildTransactionDuplicateKey({
+    playerId: doc.player,
+    settlementType: "person",
+    settlementAccountId: lpIdStr,
+    amount: money.amount,
+    transactionAt: nextRequestedAt ?? doc.requestedAt ?? doc.createdAt,
+    utr: utrTrim,
+    timeZone,
+  });
   doc.amendmentCount = prevAmendCount + 1;
   doc.lastAmendedAt = new Date();
   doc.lastAmendedBy = new Types.ObjectId(actorId);
@@ -1398,6 +1422,7 @@ export async function amendWithdrawal(
   input: AmendWithdrawalInput,
   actorId: string,
   requestId?: string,
+  options?: WithdrawalServiceOptions,
 ) {
   const doc = await WithdrawalModel.findById(id);
   if (!doc) throw new AppError("not_found", "Withdrawal not found", 404);
@@ -1405,7 +1430,7 @@ export async function amendWithdrawal(
     throw new AppError("business_rule_error", "Only approved withdrawals can be amended", 400);
   }
   if (doc.payoutSettlementType === "person") {
-    return amendWithdrawalPersonSettlement(doc as HydratedWithdrawalDoc, input, actorId, requestId);
+    return amendWithdrawalPersonSettlement(doc as HydratedWithdrawalDoc, input, actorId, requestId, options);
   }
 
   if (!input.payoutBankId) {
@@ -1419,9 +1444,6 @@ export async function amendWithdrawal(
   if (!newBank) throw new AppError("not_found", "Bank not found", 404);
   if (newBank.status !== "active") throw new AppError("business_rule_error", "Bank is not active", 400);
   const utrTrim = normalizeUtr(input.utr);
-  if (utrTrim !== normalizeUtr(doc.utr ?? "")) {
-    await ensureGlobalUtrUniqueForWithdrawal(utrTrim, doc._id);
-  }
 
   const money = await resolveMoneyFromRequest(
     {
@@ -1447,6 +1469,20 @@ export async function amendWithdrawal(
   const amendReasonText = composeRejectReasonText(resolved.masterText, input.remark);
   const oldBankId = String(doc.payoutBankId);
   const newBankId = input.payoutBankId;
+  if (!doc.player) {
+    throw new AppError("business_rule_error", "Withdrawal is missing player", 400);
+  }
+  const timeZone = options?.timeZone ?? DEFAULT_TIMEZONE;
+  await ensureNoDuplicateTransaction({
+    playerId: doc.player,
+    settlementType: "bank",
+    settlementAccountId: newBankId,
+    amount: money.amount,
+    transactionAt: nextRequestedAt ?? doc.requestedAt ?? doc.createdAt,
+    utr: utrTrim,
+    timeZone,
+    excludeWithdrawalId: doc._id,
+  });
 
   const oldSnapshot: WithdrawalAmendmentSnapshot = {
     amount: doc.amount,
@@ -1519,6 +1555,15 @@ export async function amendWithdrawal(
     doc.payoutBankName = newSnapshot.payoutBankName ?? doc.payoutBankName;
     doc.utr = utrTrim;
     doc.requestedAt = nextRequestedAt;
+    doc.duplicateKey = buildTransactionDuplicateKey({
+      playerId: doc.player,
+      settlementType: "bank",
+      settlementAccountId: newBankId,
+      amount: money.amount,
+      transactionAt: nextRequestedAt ?? doc.requestedAt ?? doc.createdAt,
+      utr: utrTrim,
+      timeZone,
+    });
     doc.amendmentCount = (doc.amendmentCount ?? 0) + 1;
     doc.lastAmendedAt = new Date();
     doc.lastAmendedBy = new Types.ObjectId(actorId);
