@@ -177,7 +177,7 @@ function statusFilterForExpense(status: DashboardStatusFilter | undefined): Reco
   if (status === "pending") return { status: "pending_audit" };
   if (status === "approved") return { status: "approved" };
   if (status === "rejected") return { status: "rejected" };
-  return {};
+  return { status: { $nin: ["rejected", "cancelled"] } };
 }
 
 async function buildDashboardFilterContext(
@@ -537,8 +537,14 @@ export async function getDashboardSummary(
     ...(selectedBankObjectId ? { payoutBankId: selectedBankObjectId } : {}),
     ...withdrawalBalanceStatusFilter,
   };
+  const expenseBankSettlementFilter = {
+    settlementAccountType: "bank",
+    bankId: { $exists: true, $ne: null },
+  };
+
   const expenseBankRangeFilter = {
     ...expenseFilterNoDate,
+    ...expenseBankSettlementFilter,
     expenseDate: {
       ...(rangeStartUtc ? { $gte: rangeStartUtc } : {}),
       ...(rangeEndUtc ? { $lte: rangeEndUtc } : {}),
@@ -547,6 +553,7 @@ export async function getDashboardSummary(
   };
   const expenseBankPriorFilter = {
     ...expenseFilterNoDate,
+    ...expenseBankSettlementFilter,
     expenseDate: {
       ...(rangeStartUtc ? { $lt: rangeStartUtc } : {}),
     },
@@ -1149,10 +1156,10 @@ export async function getDashboardSummary(
     expenseApprovedAmount = 0;
 
   for (const row of expenseAgg) {
-    if (row._id === "rejected") {
+    if (row._id === "rejected" || row._id === "cancelled") {
       continue;
     }
-    
+
     expenseTotal += row.totalAmount ?? 0;
     expenseCount += row.count ?? 0;
     if (row._id === "pending_audit") expensePendingCount = row.count ?? 0;
