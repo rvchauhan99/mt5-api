@@ -686,6 +686,8 @@ export async function getLiabilityPersonLedger(
     runningBalance: number;
     runningBalanceAbs: number;
     runningBalanceSide: ReturnType<typeof resolveSideFromBalance>;
+    operatedCurrency?: string;
+    exchangeRate?: number;
     referenceNo?: string;
     remark?: string;
   }> = [];
@@ -776,6 +778,8 @@ export async function getLiabilityPersonLedger(
         runningBalance: running,
         runningBalanceAbs: Math.abs(running),
         runningBalanceSide: resolveSideFromBalance(running),
+        operatedCurrency: e.operatedCurrency ?? undefined,
+        exchangeRate: e.exchangeRate ?? undefined,
         referenceNo: e.referenceNo?.trim() || undefined,
         remark: e.remark?.trim() || undefined,
       });
