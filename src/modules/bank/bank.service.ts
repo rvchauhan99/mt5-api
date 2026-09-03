@@ -24,6 +24,7 @@ import { resolveOpeningMoneyFromRequest } from "../../shared/utils/moneyFx";
 import { invalidateCacheDomains } from "../../shared/cache/domainCache";
 import { bankDisplayName, bankMethodLabel, toMethodCode } from "./bank.constants";
 import { PaymentMethodModel } from "../masters/payment-method.model";
+import { requirePlatformCurrency } from "../settings/settings.service";
 
 type ListBankQuery = z.infer<typeof listBankQuerySchema>;
 type ExportBankQuery = z.infer<typeof exportBankQuerySchema>;
@@ -516,7 +517,10 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
     throw new AppError("validation_error", "Invalid bank id", 400);
   }
   const bid = new Types.ObjectId(bankId);
-  const bank = await BankModel.findById(bid).lean();
+  const [bank, platformCurrency] = await Promise.all([
+    BankModel.findById(bid).lean(),
+    requirePlatformCurrency(),
+  ]);
   if (!bank) throw new AppError("not_found", "Bank not found", 404);
 
   const from = query.fromDate?.trim();
@@ -673,6 +677,42 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
   let totalBonusGiven = 0;
   let totalBonusReversed = 0;
 
+  type BreakdownAcc = {
+    currency: string;
+    creditOperated: number;
+    debitOperated: number;
+    creditPlatform: number;
+    debitPlatform: number;
+  };
+  const breakdownMap = new Map<string, BreakdownAcc>();
+
+  const accumulateBreakdown = (
+    currency: string,
+    direction: "credit" | "debit",
+    platformAmt: number,
+    operatedAmt: number,
+  ) => {
+    const key = currency || platformCurrency;
+    let acc = breakdownMap.get(key);
+    if (!acc) {
+      acc = {
+        currency: key,
+        creditOperated: 0,
+        debitOperated: 0,
+        creditPlatform: 0,
+        debitPlatform: 0,
+      };
+      breakdownMap.set(key, acc);
+    }
+    if (direction === "credit") {
+      acc.creditPlatform += platformAmt;
+      acc.creditOperated += operatedAmt;
+    } else {
+      acc.debitPlatform += platformAmt;
+      acc.debitOperated += operatedAmt;
+    }
+  };
+
   const rows = events.map((ev) => {
     if (ev.kind === "deposit") {
       const d = ev.doc;
@@ -681,7 +721,17 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
       running += amt;
       totalCredits += amt;
       totalBonusGiven += bonus;
-      
+
+      const operatedCurrency = d.operatedCurrency ?? undefined;
+      const operatedAmount = d.operatedAmount != null ? Number(d.operatedAmount) : undefined;
+      const exchangeRate = d.exchangeRate ?? undefined;
+      accumulateBreakdown(
+        operatedCurrency || platformCurrency,
+        "credit",
+        amt,
+        operatedAmount != null && Number.isFinite(operatedAmount) ? operatedAmount : amt,
+      );
+
       const playerObj = d.player as { name?: string } | undefined;
       const createdByObj = d.createdBy as { fullName?: string } | undefined;
 
@@ -694,14 +744,15 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         playerName: playerObj?.name ?? "",
         createdByName: createdByObj?.fullName ?? "",
         amount: amt,
-        operatedCurrency: d.operatedCurrency ?? undefined,
-        exchangeRate: d.exchangeRate ?? undefined,
+        operatedCurrency,
+        operatedAmount,
+        exchangeRate,
         direction: "credit" as const,
         balanceAfter: running,
         bonusMemo: bonus > 0 ? bonus : undefined,
       };
     }
-    
+
     if (ev.kind === "withdrawal") {
       const w = ev.doc;
       const amt = w.payableAmount ?? w.amount; // Actual cash paid from company bank
@@ -709,6 +760,16 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
       running -= amt;
       totalDebits += amt;
       totalBonusReversed += reversal;
+
+      const operatedCurrency = w.operatedCurrency ?? undefined;
+      const operatedAmount = w.operatedAmount != null ? Number(w.operatedAmount) : undefined;
+      const exchangeRate = w.exchangeRate ?? undefined;
+      accumulateBreakdown(
+        operatedCurrency || platformCurrency,
+        "debit",
+        amt,
+        operatedAmount != null && Number.isFinite(operatedAmount) ? operatedAmount : amt,
+      );
 
       const playerObj = w.player as { name?: string } | undefined;
       const createdByObj = w.createdBy as { fullName?: string } | undefined;
@@ -722,14 +783,15 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         playerName: playerObj?.name ?? w.playerName ?? "",
         createdByName: createdByObj?.fullName ?? "",
         amount: amt,
-        operatedCurrency: w.operatedCurrency ?? undefined,
-        exchangeRate: w.exchangeRate ?? undefined,
+        operatedCurrency,
+        operatedAmount,
+        exchangeRate,
         direction: "debit" as const,
         balanceAfter: running,
         bonusMemo: reversal > 0 ? reversal : undefined,
       };
     }
-    
+
     if (ev.kind === "liability") {
       const le = ev.doc;
       const isBankFrom = le.fromAccountType === "bank" && String(le.fromAccountId) === String(bid);
@@ -741,6 +803,15 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         running += le.amount;
         totalCredits += le.amount;
       }
+      const operatedCurrency = le.operatedCurrency ?? undefined;
+      const operatedAmount = le.operatedAmount != null ? Number(le.operatedAmount) : undefined;
+      const exchangeRate = le.exchangeRate ?? undefined;
+      accumulateBreakdown(
+        operatedCurrency || platformCurrency,
+        direction,
+        le.amount,
+        operatedAmount != null && Number.isFinite(operatedAmount) ? operatedAmount : le.amount,
+      );
       const createdByObj = le.createdBy as { fullName?: string } | undefined;
       const counterpartyName =
         le.fromAccountType === "person"
@@ -757,8 +828,9 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         playerName: counterpartyName,
         createdByName: createdByObj?.fullName ?? "",
         amount: le.amount,
-        operatedCurrency: le.operatedCurrency ?? undefined,
-        exchangeRate: le.exchangeRate ?? undefined,
+        operatedCurrency,
+        operatedAmount,
+        exchangeRate,
         direction,
         balanceAfter: running,
         bonusMemo: undefined,
@@ -769,6 +841,7 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
       const st = ev.doc;
       const signed = Number(st.signedAmount ?? 0);
       const amt = Math.abs(signed);
+      const direction = signed >= 0 ? ("credit" as const) : ("debit" as const);
       if (signed >= 0) {
         running += amt;
         totalCredits += amt;
@@ -776,6 +849,7 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         running -= amt;
         totalDebits += amt;
       }
+      accumulateBreakdown(platformCurrency, direction, amt, amt);
       const createdByObj = st.createdBy as { fullName?: string; username?: string } | undefined;
       const createdLabel = createdByObj?.fullName?.trim()
         ? createdByObj.fullName.trim()
@@ -789,7 +863,7 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
         playerName: st.reason?.trim() ? st.reason.trim().slice(0, 200) : "",
         createdByName: createdLabel,
         amount: amt,
-        direction: signed >= 0 ? ("credit" as const) : ("debit" as const),
+        direction,
         balanceAfter: running,
         bonusMemo: undefined,
       };
@@ -801,6 +875,7 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
       const ref = `REF-IB-${String(r._id).slice(-8).toUpperCase()}`;
       running -= amt;
       totalDebits += amt;
+      accumulateBreakdown(platformCurrency, "debit", amt, amt);
       return {
         kind: "referral" as const,
         refId: String(r._id),
@@ -822,6 +897,15 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
     const e = ev.doc;
     running -= e.amount;
     totalDebits += e.amount;
+    const operatedCurrency = e.operatedCurrency ?? undefined;
+    const operatedAmount = e.operatedAmount != null ? Number(e.operatedAmount) : undefined;
+    const exchangeRate = e.exchangeRate ?? undefined;
+    accumulateBreakdown(
+      operatedCurrency || platformCurrency,
+      "debit",
+      e.amount,
+      operatedAmount != null && Number.isFinite(operatedAmount) ? operatedAmount : e.amount,
+    );
     return {
       kind: "expense" as const,
       refId: e._id.toString(),
@@ -831,12 +915,19 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
       playerName: "",
       createdByName: "",
       amount: e.amount,
-      operatedCurrency: e.operatedCurrency ?? undefined,
-      exchangeRate: e.exchangeRate ?? undefined,
+      operatedCurrency,
+      operatedAmount,
+      exchangeRate,
       direction: "debit" as const,
       balanceAfter: running,
       bonusMemo: undefined,
     };
+  });
+
+  const operatedCurrencyBreakdown = [...breakdownMap.values()].sort((a, b) => {
+    if (a.currency === platformCurrency) return -1;
+    if (b.currency === platformCurrency) return 1;
+    return a.currency.localeCompare(b.currency);
   });
 
   return {
@@ -856,6 +947,7 @@ export async function getBankLedger(bankId: string, query: LedgerQuery, options?
     totalDebits,
     totalBonusGiven,
     totalBonusReversed,
+    operatedCurrencyBreakdown,
     rows,
   };
 }
