@@ -3,6 +3,7 @@ import { StatusCodes } from "http-status-codes";
 import {
   createLiabilityEntryBodySchema,
   createLiabilityPersonBodySchema,
+  liabilityEntryIdParamSchema,
   liabilityLedgerQuerySchema,
   liabilityReportQuerySchema,
   liabilityPersonIdParamSchema,
@@ -10,11 +11,13 @@ import {
   exportLiabilityPersonQuerySchema,
   listLiabilityEntryQuerySchema,
   listLiabilityPersonQuerySchema,
+  updateLiabilityEntryBodySchema,
   updateLiabilityPersonBodySchema,
 } from "./liability.validation";
 import {
   createLiabilityEntry,
   createLiabilityPerson,
+  deleteLiabilityEntry,
   exportLiabilityEntriesToBuffer,
   exportLiabilityLedgerToBuffer,
   exportLiabilityPersonsToBuffer,
@@ -23,6 +26,7 @@ import {
   getLiabilityReportSummary,
   listLiabilityEntries,
   listLiabilityPersons,
+  updateLiabilityEntry,
   updateLiabilityPerson,
 } from "./liability.service";
 import { resolveRequestTimeZone } from "../../shared/utils/requestTimezone";
@@ -60,6 +64,19 @@ export async function createLiabilityEntryController(req: Request, res: Response
   const body = createLiabilityEntryBodySchema.parse(req.body);
   const data = await createLiabilityEntry(body, req.user!.userId, req.requestId);
   res.status(StatusCodes.CREATED).json({ success: true, data });
+}
+
+export async function updateLiabilityEntryController(req: Request, res: Response) {
+  const body = updateLiabilityEntryBodySchema.parse(req.body);
+  const { id } = liabilityEntryIdParamSchema.parse(req.params);
+  const data = await updateLiabilityEntry(id, body, req.user!.userId, req.requestId);
+  res.status(StatusCodes.OK).json({ success: true, data });
+}
+
+export async function deleteLiabilityEntryController(req: Request, res: Response) {
+  const { id } = liabilityEntryIdParamSchema.parse(req.params);
+  await deleteLiabilityEntry(id, req.user!.userId, req.requestId);
+  res.status(StatusCodes.OK).json({ success: true, data: { deleted: true } });
 }
 
 export async function listLiabilityEntryController(req: Request, res: Response) {

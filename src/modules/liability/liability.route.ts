@@ -6,6 +6,7 @@ import { PERMISSIONS } from "../../shared/constants/permissions";
 import {
   createLiabilityEntryController,
   createLiabilityPersonController,
+  deleteLiabilityEntryController,
   exportLiabilityEntryController,
   exportLiabilityLedgerController,
   exportLiabilityPersonController,
@@ -14,17 +15,20 @@ import {
   liabilitySummaryReportController,
   listLiabilityEntryController,
   listLiabilityPersonController,
+  updateLiabilityEntryController,
   updateLiabilityPersonController,
 } from "./liability.controller";
 import {
   createLiabilityEntryBodySchema,
   createLiabilityPersonBodySchema,
+  liabilityEntryIdParamSchema,
   liabilityLedgerQuerySchema,
   liabilityPersonIdParamSchema,
   exportLiabilityEntryQuerySchema,
   exportLiabilityPersonQuerySchema,
   listLiabilityEntryQuerySchema,
   listLiabilityPersonQuerySchema,
+  updateLiabilityEntryBodySchema,
   updateLiabilityPersonBodySchema,
 } from "./liability.validation";
 
@@ -65,6 +69,20 @@ liabilityRouter.post(
   permissionMiddleware(PERMISSIONS.LIABILITY_ENTRY_ADD),
   validate({ body: createLiabilityEntryBodySchema }),
   createLiabilityEntryController,
+);
+
+liabilityRouter.patch(
+  "/entries/:id",
+  permissionMiddleware(PERMISSIONS.LIABILITY_ENTRY_EDIT),
+  validate({ params: liabilityEntryIdParamSchema, body: updateLiabilityEntryBodySchema }),
+  updateLiabilityEntryController,
+);
+
+liabilityRouter.delete(
+  "/entries/:id",
+  permissionMiddleware(PERMISSIONS.LIABILITY_ENTRY_DELETE),
+  validate({ params: liabilityEntryIdParamSchema }),
+  deleteLiabilityEntryController,
 );
 
 liabilityRouter.get(

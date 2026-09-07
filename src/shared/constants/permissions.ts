@@ -39,6 +39,8 @@ export const PERMISSIONS = {
   LIABILITY_PERSON_LIST: "liability.person_list",
   LIABILITY_ENTRY_ADD: "liability.entry_add",
   LIABILITY_ENTRY_LIST: "liability.entry_list",
+  LIABILITY_ENTRY_EDIT: "liability.entry_edit",
+  LIABILITY_ENTRY_DELETE: "liability.entry_delete",
   LIABILITY_LEDGER_VIEW: "liability.ledger_view",
   LIABILITY_REPORT_VIEW: "liability.report_view",
 

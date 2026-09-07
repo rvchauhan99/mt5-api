@@ -118,6 +118,43 @@ function enrichPersonListRow<
   };
 }
 
+/** Person to = inward (DR); person from = outward (CR). Listing/reports prefer live totals over stored rollups. */
+async function loadPersonMovementTotals(
+  personIds: Types.ObjectId[],
+): Promise<Map<string, { totalDebits: number; totalCredits: number }>> {
+  const map = new Map<string, { totalDebits: number; totalCredits: number }>();
+  if (personIds.length === 0) return map;
+
+  for (const id of personIds) {
+    map.set(String(id), { totalDebits: 0, totalCredits: 0 });
+  }
+
+  const [creditAggs, debitAggs] = await Promise.all([
+    LiabilityEntryModel.aggregate<{ _id: Types.ObjectId; total: number }>([
+      { $match: { fromAccountType: "person", fromAccountId: { $in: personIds } } },
+      { $group: { _id: "$fromAccountId", total: { $sum: "$amount" } } },
+    ]),
+    LiabilityEntryModel.aggregate<{ _id: Types.ObjectId; total: number }>([
+      { $match: { toAccountType: "person", toAccountId: { $in: personIds } } },
+      { $group: { _id: "$toAccountId", total: { $sum: "$amount" } } },
+    ]),
+  ]);
+
+  for (const row of creditAggs) {
+    const key = String(row._id);
+    const cur = map.get(key) ?? { totalDebits: 0, totalCredits: 0 };
+    cur.totalCredits = Number(row.total ?? 0);
+    map.set(key, cur);
+  }
+  for (const row of debitAggs) {
+    const key = String(row._id);
+    const cur = map.get(key) ?? { totalDebits: 0, totalCredits: 0 };
+    cur.totalDebits = Number(row.total ?? 0);
+    map.set(key, cur);
+  }
+  return map;
+}
+
 export async function recomputePersonRollup(personId: string): Promise<void> {
   if (!Types.ObjectId.isValid(personId)) return;
   const pid = new Types.ObjectId(personId);
@@ -388,7 +425,25 @@ export async function listLiabilityPersons(query: ListLiabilityPersonQuery, _opt
     LiabilityPersonModel.countDocuments(filter),
   ]);
 
-  const rows = rawRows.map((r) => enrichPersonListRow(r));
+  const personIds = rawRows.map((r) => r._id as Types.ObjectId);
+  const movementByPerson = await loadPersonMovementTotals(personIds);
+  const driftedPersonIds: string[] = [];
+
+  const rows = rawRows.map((r) => {
+    const live = movementByPerson.get(String(r._id)) ?? { totalDebits: 0, totalCredits: 0 };
+    if (Number(r.totalDebits ?? 0) !== live.totalDebits || Number(r.totalCredits ?? 0) !== live.totalCredits) {
+      driftedPersonIds.push(String(r._id));
+    }
+    return enrichPersonListRow({
+      ...r,
+      totalDebits: live.totalDebits,
+      totalCredits: live.totalCredits,
+    });
+  });
+
+  if (driftedPersonIds.length > 0) {
+    void Promise.all(driftedPersonIds.map((id) => recomputePersonRollup(id)));
+  }
 
   return {
     rows,
@@ -492,6 +547,266 @@ export async function createLiabilityEntry(
   return doc;
 }
 
+type ManualLiabilityEntryInput = {
+  entryDate: string;
+  entryType?: "receipt" | "payment" | "contra" | "journal";
+  amount: number;
+  fromAccountType?: "bank" | "person";
+  fromAccountId?: string;
+  toAccountType?: "bank" | "person";
+  toAccountId?: string;
+  referenceNo?: string;
+  remark?: string;
+  operatedCurrency?: string;
+  operatedAmount?: number;
+  exchangeRate?: number;
+};
+
+function isSourcedLiabilityEntry(doc: {
+  sourceType?: string | null;
+  sourceExpenseId?: unknown;
+  sourceDepositId?: unknown;
+  sourceWithdrawalId?: unknown;
+  sourceReferralAccrualId?: unknown;
+}): boolean {
+  return (
+    Boolean(doc.sourceType) ||
+    doc.sourceExpenseId != null ||
+    doc.sourceDepositId != null ||
+    doc.sourceWithdrawalId != null ||
+    doc.sourceReferralAccrualId != null
+  );
+}
+
+/** Clear deposit/withdrawal/expense/referral back-links that point at this liability entry. */
+async function clearLiabilityEntrySourceLinks(entryId: string): Promise<void> {
+  if (!Types.ObjectId.isValid(entryId)) return;
+  const eid = new Types.ObjectId(entryId);
+  await Promise.all([
+    DepositModel.updateMany({ liabilityEntryId: eid }, { $unset: { liabilityEntryId: "" } }),
+    WithdrawalModel.updateMany({ payoutLiabilityEntryId: eid }, { $unset: { payoutLiabilityEntryId: "" } }),
+    ExpenseModel.updateMany({ liabilityEntryId: eid }, { $unset: { liabilityEntryId: "" } }),
+    ReferralAccrualModel.updateMany({ liabilityEntryId: eid }, { $unset: { liabilityEntryId: "" } }),
+  ]);
+}
+
+/** Sync platform amount onto the linked source document (settlement amend). Legs stay unchanged. */
+async function syncSourceAmountFromLiabilityEntry(doc: {
+  sourceType?: string | null;
+  sourceDepositId?: Types.ObjectId;
+  sourceWithdrawalId?: Types.ObjectId;
+  sourceExpenseId?: Types.ObjectId;
+  sourceReferralAccrualId?: Types.ObjectId;
+}, platformAmount: number): Promise<void> {
+  if (doc.sourceType === "deposit" && doc.sourceDepositId) {
+    const deposit = await DepositModel.findById(doc.sourceDepositId);
+    if (!deposit) return;
+    const bonus = Number(deposit.bonusAmount ?? 0);
+    deposit.amount = platformAmount;
+    deposit.totalAmount = platformAmount + (Number.isFinite(bonus) ? bonus : 0);
+    await deposit.save();
+    return;
+  }
+  if (doc.sourceType === "withdrawal" && doc.sourceWithdrawalId) {
+    await WithdrawalModel.updateOne(
+      { _id: doc.sourceWithdrawalId },
+      { $set: { payableAmount: platformAmount } },
+    );
+    return;
+  }
+  if (doc.sourceType === "expense" && doc.sourceExpenseId) {
+    await ExpenseModel.updateOne({ _id: doc.sourceExpenseId }, { $set: { amount: platformAmount } });
+  }
+  // Referral multi-accrual batches: leave accrual amounts; liability entry amount is authoritative for ledger.
+}
+
+export async function updateLiabilityEntry(
+  entryId: string,
+  input: ManualLiabilityEntryInput,
+  actorId: string,
+  requestId?: string,
+) {
+  if (!Types.ObjectId.isValid(entryId)) throw new AppError("validation_error", "Invalid liability entry id", 400);
+  const eid = new Types.ObjectId(entryId);
+  const existing = await LiabilityEntryModel.findById(eid).lean();
+  if (!existing) throw new AppError("not_found", "Liability entry not found", 404);
+
+  const money = await resolveMoneyFromRequest(
+    {
+      amount: input.amount,
+      operatedCurrency: input.operatedCurrency,
+      operatedAmount: input.operatedAmount,
+      exchangeRate: input.exchangeRate,
+    },
+    { minPlatformAmount: getCurrencyMinUnit(await requirePlatformCurrency()) },
+  );
+
+  const sourced = isSourcedLiabilityEntry(existing);
+  const recalcTargets = new Set<string>();
+  if (existing.fromAccountType === "person") recalcTargets.add(String(existing.fromAccountId));
+  if (existing.toAccountType === "person") recalcTargets.add(String(existing.toAccountId));
+
+  if (sourced) {
+    const updated = await LiabilityEntryModel.findByIdAndUpdate(
+      eid,
+      {
+        $set: {
+          entryDate: parseYmdToDate(input.entryDate),
+          amount: money.amount,
+          operatedCurrency: money.operatedCurrency,
+          operatedAmount: money.operatedAmount,
+          exchangeRate: money.exchangeRate,
+          referenceNo: input.referenceNo?.trim() ?? "",
+          remark: input.remark?.trim() ?? "",
+        },
+      },
+      { new: true },
+    ).lean();
+
+    if (!updated) throw new AppError("not_found", "Liability entry not found", 404);
+
+    await syncSourceAmountFromLiabilityEntry(existing, money.amount);
+    await Promise.all([...recalcTargets].map((personId) => recomputePersonRollup(personId)));
+
+    await createAuditLog({
+      actorId,
+      action: "liability.entry.update",
+      entity: "liability_entry",
+      entityId: entryId,
+      oldValue: {
+        entryDate: existing.entryDate,
+        amount: existing.amount,
+        referenceNo: existing.referenceNo,
+        remark: existing.remark,
+        sourceType: existing.sourceType,
+      } as unknown as Record<string, unknown>,
+      newValue: {
+        entryDate: input.entryDate,
+        amount: money.amount,
+        operatedCurrency: money.operatedCurrency,
+        operatedAmount: money.operatedAmount,
+        exchangeRate: money.exchangeRate,
+        referenceNo: input.referenceNo?.trim() || undefined,
+        remark: input.remark?.trim() || undefined,
+        sourceType: existing.sourceType,
+        legsUnchanged: true,
+      } as unknown as Record<string, unknown>,
+      requestId,
+    });
+
+    return updated;
+  }
+
+  if (
+    !input.fromAccountType ||
+    !input.fromAccountId ||
+    !input.toAccountType ||
+    !input.toAccountId ||
+    !input.entryType
+  ) {
+    throw new AppError("validation_error", "Manual entry update requires entryType and both accounts", 400);
+  }
+
+  const manualInput = {
+    entryDate: input.entryDate,
+    entryType: input.entryType,
+    amount: input.amount,
+    fromAccountType: input.fromAccountType,
+    fromAccountId: input.fromAccountId,
+    toAccountType: input.toAccountType,
+    toAccountId: input.toAccountId,
+    referenceNo: input.referenceNo,
+    remark: input.remark,
+    operatedCurrency: input.operatedCurrency,
+    operatedAmount: input.operatedAmount,
+    exchangeRate: input.exchangeRate,
+  };
+
+  validateDistinctEndpoints(manualInput);
+  await Promise.all([
+    ensureAccountExists(manualInput.fromAccountType, manualInput.fromAccountId),
+    ensureAccountExists(manualInput.toAccountType, manualInput.toAccountId),
+  ]);
+
+  if (manualInput.fromAccountType === "person") recalcTargets.add(manualInput.fromAccountId);
+  if (manualInput.toAccountType === "person") recalcTargets.add(manualInput.toAccountId);
+
+  const updated = await LiabilityEntryModel.findByIdAndUpdate(
+    eid,
+    {
+      $set: {
+        entryDate: parseYmdToDate(manualInput.entryDate),
+        entryType: manualInput.entryType,
+        amount: money.amount,
+        operatedCurrency: money.operatedCurrency,
+        operatedAmount: money.operatedAmount,
+        exchangeRate: money.exchangeRate,
+        fromAccountType: manualInput.fromAccountType,
+        fromAccountId: new Types.ObjectId(manualInput.fromAccountId),
+        toAccountType: manualInput.toAccountType,
+        toAccountId: new Types.ObjectId(manualInput.toAccountId),
+        referenceNo: manualInput.referenceNo?.trim() ?? "",
+        remark: manualInput.remark?.trim() ?? "",
+      },
+    },
+    { new: true },
+  ).lean();
+
+  if (!updated) throw new AppError("not_found", "Liability entry not found", 404);
+
+  await Promise.all([...recalcTargets].map((personId) => recomputePersonRollup(personId)));
+
+  await createAuditLog({
+    actorId,
+    action: "liability.entry.update",
+    entity: "liability_entry",
+    entityId: entryId,
+    oldValue: {
+      entryDate: existing.entryDate,
+      entryType: existing.entryType,
+      amount: existing.amount,
+      operatedCurrency: existing.operatedCurrency,
+      operatedAmount: existing.operatedAmount,
+      exchangeRate: existing.exchangeRate,
+      fromAccountType: existing.fromAccountType,
+      fromAccountId: String(existing.fromAccountId),
+      toAccountType: existing.toAccountType,
+      toAccountId: String(existing.toAccountId),
+      referenceNo: existing.referenceNo,
+      remark: existing.remark,
+    } as unknown as Record<string, unknown>,
+    newValue: {
+      entryDate: manualInput.entryDate,
+      entryType: manualInput.entryType,
+      amount: money.amount,
+      operatedCurrency: money.operatedCurrency,
+      operatedAmount: money.operatedAmount,
+      exchangeRate: money.exchangeRate,
+      fromAccountType: manualInput.fromAccountType,
+      fromAccountId: manualInput.fromAccountId,
+      toAccountType: manualInput.toAccountType,
+      toAccountId: manualInput.toAccountId,
+      referenceNo: manualInput.referenceNo?.trim() || undefined,
+      remark: manualInput.remark?.trim() || undefined,
+    } as unknown as Record<string, unknown>,
+    requestId,
+  });
+
+  return updated;
+}
+
+/** Public delete for manual and settlement-sourced liability entries. */
+export async function deleteLiabilityEntry(entryId: string, actorId: string, requestId?: string): Promise<boolean> {
+  if (!Types.ObjectId.isValid(entryId)) throw new AppError("validation_error", "Invalid liability entry id", 400);
+  const eid = new Types.ObjectId(entryId);
+  const doc = await LiabilityEntryModel.findById(eid).lean();
+  if (!doc) throw new AppError("not_found", "Liability entry not found", 404);
+  if (isSourcedLiabilityEntry(doc)) {
+    await clearLiabilityEntrySourceLinks(entryId);
+  }
+  return deleteLiabilityEntryForReversal(entryId, actorId, requestId);
+}
+
 /** Remove a system-generated liability entry (e.g. deposit/withdrawal settlement) for reversal flows. */
 export async function deleteLiabilityEntryForReversal(entryId: string, actorId: string, requestId?: string): Promise<boolean> {
   if (!Types.ObjectId.isValid(entryId)) throw new AppError("validation_error", "Invalid liability entry id", 400);
@@ -533,6 +848,37 @@ export async function listLiabilityEntries(
   const conditions: Record<string, unknown>[] = [];
   if (query.entryType) conditions.push({ entryType: query.entryType });
 
+  const sourceType = trimUndef(query.sourceType);
+  if (sourceType === "manual") {
+    conditions.push({
+      $or: [{ sourceType: { $exists: false } }, { sourceType: null }, { sourceType: "" }],
+    });
+  } else if (sourceType) {
+    conditions.push({ sourceType });
+  }
+
+  const personId = trimUndef(query.personId);
+  if (personId && Types.ObjectId.isValid(personId)) {
+    const pid = new Types.ObjectId(personId);
+    conditions.push({
+      $or: [
+        { fromAccountType: "person", fromAccountId: pid },
+        { toAccountType: "person", toAccountId: pid },
+      ],
+    });
+  }
+
+  const bankId = trimUndef(query.bankId);
+  if (bankId && Types.ObjectId.isValid(bankId)) {
+    const bid = new Types.ObjectId(bankId);
+    conditions.push({
+      $or: [
+        { fromAccountType: "bank", fromAccountId: bid },
+        { toAccountType: "bank", toAccountId: bid },
+      ],
+    });
+  }
+
   const accountType = trimUndef(query.accountType);
   const accountId = trimUndef(query.accountId);
   if (accountType && accountId && Types.ObjectId.isValid(accountId)) {
@@ -567,6 +913,22 @@ export async function listLiabilityEntries(
         ...(toD ? { $lte: toD } : {}),
       },
     });
+  }
+
+  const amountFrom = query.amount_from;
+  const amountTo = query.amount_to;
+  if (amountFrom != null || amountTo != null) {
+    conditions.push({
+      amount: {
+        ...(amountFrom != null && Number.isFinite(amountFrom) ? { $gte: amountFrom } : {}),
+        ...(amountTo != null && Number.isFinite(amountTo) ? { $lte: amountTo } : {}),
+      },
+    });
+  }
+
+  const operatedCurrency = trimUndef(query.operatedCurrency);
+  if (operatedCurrency) {
+    conditions.push({ operatedCurrency: operatedCurrency.toUpperCase() });
   }
 
   const filter = conditions.length === 0 ? {} : conditions.length === 1 ? conditions[0] : { $and: conditions };
@@ -674,7 +1036,9 @@ export async function getLiabilityPersonLedger(
   const to = query.toDate ? ymdToUtcEnd(query.toDate, timeZone) : null;
 
   let running = person.openingBalance ?? 0;
-  let periodOpeningBalance: number | undefined;
+  let periodOpeningBalance = running;
+  let periodClosingBalance = running;
+  let enteredPeriod = false;
   const rows: Array<{
     _id: string;
     at: string;
@@ -754,7 +1118,9 @@ export async function getLiabilityPersonLedger(
 
   for (const e of entries) {
     const at = new Date(e.entryDate ?? e.createdAt ?? new Date(0));
-    const isInRange = (!from || at >= from) && (!to || at <= to);
+    const isBeforeRange = Boolean(from && at < from);
+    const isAfterRange = Boolean(to && at > to);
+    const isInRange = !isBeforeRange && !isAfterRange;
     const fromId = String(e.fromAccountId);
     const toId = String(e.toAccountId);
     const isPersonFrom = e.fromAccountType === "person" && fromId === personId;
@@ -763,11 +1129,20 @@ export async function getLiabilityPersonLedger(
     const credit = isPersonFrom ? e.amount : 0;
     const delta = viewMode === "person" ? credit - debit : debit - credit;
 
+    if (isBeforeRange) {
+      running += delta;
+      periodOpeningBalance = running;
+      periodClosingBalance = running;
+      continue;
+    }
+
     if (isInRange) {
-      if (periodOpeningBalance === undefined) {
+      if (!enteredPeriod) {
         periodOpeningBalance = running;
+        enteredPeriod = true;
       }
       running += delta;
+      periodClosingBalance = running;
       rows.push({
         _id: String(e._id),
         at: formatDateTimeForTimeZone(at, timeZone),
@@ -785,9 +1160,11 @@ export async function getLiabilityPersonLedger(
         referenceNo: e.referenceNo?.trim() || undefined,
         remark: e.remark?.trim() || undefined,
       });
-    } else {
-      running += delta;
+      continue;
     }
+
+    // After range: still advance full-history running; period open/close already final.
+    running += delta;
   }
 
   const openingBal = person.openingBalance ?? 0;
@@ -801,15 +1178,15 @@ export async function getLiabilityPersonLedger(
       openingSide: resolveSideFromBalance(openingBal),
     },
     rows,
+    /** Full-history closing (all entries), regardless of date filter. */
     closingBalance: running,
     closingSide: resolveSideFromBalance(running),
-    ...(periodOpeningBalance !== undefined
-      ? {
-          periodOpeningBalance,
-          periodOpeningBalanceAbs: Math.abs(periodOpeningBalance),
-          periodOpeningSide: resolveSideFromBalance(periodOpeningBalance),
-        }
-      : {}),
+    periodOpeningBalance,
+    periodOpeningBalanceAbs: Math.abs(periodOpeningBalance),
+    periodOpeningSide: resolveSideFromBalance(periodOpeningBalance),
+    periodClosingBalance,
+    periodClosingBalanceAbs: Math.abs(periodClosingBalance),
+    periodClosingSide: resolveSideFromBalance(periodClosingBalance),
   };
 }
 
@@ -840,11 +1217,11 @@ export async function exportLiabilityPersonsToBuffer(
     "Opening Amount": r.openingBalanceAbs,
     "Opening Side": r.openingBalanceSide,
     "Opening Balance (signed)": r.openingBalance ?? 0,
-    "Total Credits": r.totalCredits ?? 0,
-    "Total Debits": r.totalDebits ?? 0,
-    "Closing Amount": r.closingBalanceAbs,
-    "Closing Side": r.closingBalanceSide,
-    "Closing Balance (signed)": r.closingBalance ?? 0,
+    "Inward (DR)": r.totalDebits ?? 0,
+    "Outward (CR)": r.totalCredits ?? 0,
+    "Closing Amount (platform)": r.closingBalanceAbs,
+    "Closing Side (platform)": r.closingBalanceSide,
+    "Closing Balance (platform signed)": r.closingBalance ?? 0,
     Notes: r.notes ?? "",
     "Created By": formatUserForExport(r.createdBy),
     "Updated By": formatUserForExport(r.updatedBy),
@@ -915,14 +1292,16 @@ export async function exportLiabilityLedgerToBuffer(
 export async function getLiabilityReportSummary(query?: { viewMode?: string }) {
   const viewMode = normalizeViewMode(query?.viewMode);
   const persons = await LiabilityPersonModel.find({ isActive: true }).lean();
+  const movementByPerson = await loadPersonMovementTotals(persons.map((p) => p._id as Types.ObjectId));
   let totalReceivable = 0;
   let totalPayable = 0;
   persons.forEach((p) => {
+    const live = movementByPerson.get(String(p._id)) ?? { totalDebits: 0, totalCredits: 0 };
     const bal = resolveBalanceByViewMode(
       {
         openingBalance: p.openingBalance,
-        totalDebits: p.totalDebits,
-        totalCredits: p.totalCredits,
+        totalDebits: live.totalDebits,
+        totalCredits: live.totalCredits,
       },
       viewMode,
     );
@@ -946,13 +1325,15 @@ export async function getLiabilityReportSummary(query?: { viewMode?: string }) {
 export async function getLiabilityReportPersonWise(query?: { viewMode?: string }) {
   const viewMode = normalizeViewMode(query?.viewMode);
   const persons = await LiabilityPersonModel.find({}).lean();
+  const movementByPerson = await loadPersonMovementTotals(persons.map((p) => p._id as Types.ObjectId));
 
   return persons.map((p) => {
+    const live = movementByPerson.get(String(p._id)) ?? { totalDebits: 0, totalCredits: 0 };
     const balance = resolveBalanceByViewMode(
       {
         openingBalance: p.openingBalance,
-        totalDebits: p.totalDebits,
-        totalCredits: p.totalCredits,
+        totalDebits: live.totalDebits,
+        totalCredits: live.totalCredits,
       },
       viewMode,
     );
@@ -963,8 +1344,8 @@ export async function getLiabilityReportPersonWise(query?: { viewMode?: string }
       isActive: p.isActive,
       balance,
       balanceAbs: Math.abs(balance),
-      totalCredits: Number(p.totalCredits ?? 0),
-      totalDebits: Number(p.totalDebits ?? 0),
+      totalCredits: live.totalCredits,
+      totalDebits: live.totalDebits,
       side: resolvedSide === "settled" ? "receivable" : resolvedSide,
       sideLabel: resolvedSide === "settled" ? "settled" : resolvedSide,
       viewMode,

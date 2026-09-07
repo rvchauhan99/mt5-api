@@ -6,6 +6,8 @@ import { migration002BackfillBusinessDatetimes } from "./002-backfill-business-d
 import { migration003LiabilityPersonSideClosingBalance } from "./003-liability-person-side-closing-balance";
 import { migration004SeedExpenseCancelReasons } from "./004-seed-expense-cancel-reasons";
 import { migration005RecomputeExchangeCurrentBalances } from "./005-recompute-exchange-current-balances";
+import { migration006FlipWithdrawalLiabilityLegs } from "./006-flip-withdrawal-liability-legs";
+import { migration007FlipDepositLiabilityLegs } from "./007-flip-deposit-liability-legs";
 
 export const MIGRATIONS_COLLECTION = "__migrations";
 
@@ -20,6 +22,8 @@ const registry: Migration[] = [
   migration003LiabilityPersonSideClosingBalance,
   migration004SeedExpenseCancelReasons,
   migration005RecomputeExchangeCurrentBalances,
+  migration006FlipWithdrawalLiabilityLegs,
+  migration007FlipDepositLiabilityLegs,
 ];
 
 export async function runMigrations(): Promise<void> {

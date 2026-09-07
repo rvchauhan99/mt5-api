@@ -128,8 +128,10 @@ describe("Liability person deposit settlement and withdrawal payout", () => {
     const entry = await LiabilityEntryModel.findOne({ sourceDepositId: verified?._id }).lean();
     expect(entry).toBeTruthy();
     expect(entry?.sourceType).toBe("deposit");
-    expect(String(entry?.toAccountId)).toBe(depId);
-    expect(String(entry?.fromAccountId)).toBe(liablePersonId);
+    expect(entry?.fromAccountType).toBe("deposit");
+    expect(entry?.toAccountType).toBe("person");
+    expect(String(entry?.fromAccountId)).toBe(depId);
+    expect(String(entry?.toAccountId)).toBe(liablePersonId);
     expect(entry?.amount).toBe(300);
   });
 
@@ -233,8 +235,15 @@ describe("Liability person deposit settlement and withdrawal payout", () => {
     const entry = await LiabilityEntryModel.findOne({ sourceWithdrawalId: w?._id }).lean();
     expect(entry).toBeTruthy();
     expect(entry?.sourceType).toBe("withdrawal");
-    expect(String(entry?.fromAccountId)).toBe(wId);
-    expect(String(entry?.toAccountId)).toBe(liablePersonId);
+    expect(entry?.fromAccountType).toBe("person");
+    expect(entry?.toAccountType).toBe("withdrawal");
+    expect(String(entry?.fromAccountId)).toBe(liablePersonId);
+    expect(String(entry?.toAccountId)).toBe(wId);
+
+    const personAfter = await LiabilityPersonModel.findById(liablePersonId).lean();
+    expect(personAfter).toBeTruthy();
+    // Person is From (credit); platform closing = opening + debits − credits decreases vs prior.
+    expect(Number(personAfter!.totalCredits ?? 0)).toBeGreaterThanOrEqual(200);
   });
 
   it("person-settled withdrawal: amend without payoutBankId updates payable and liability entry", async () => {
@@ -302,7 +311,10 @@ describe("Liability person deposit settlement and withdrawal payout", () => {
     }).lean();
     expect(entries).toHaveLength(1);
     expect(entries[0]?.amount).toBe(220);
-    expect(String(entries[0]?.toAccountId)).toBe(liablePersonId);
+    expect(entries[0]?.fromAccountType).toBe("person");
+    expect(entries[0]?.toAccountType).toBe("withdrawal");
+    expect(String(entries[0]?.fromAccountId)).toBe(liablePersonId);
+    expect(String(entries[0]?.toAccountId)).toBe(wId);
   });
 
   it("GET /liability/persons returns platform-side closing on list rows", async () => {

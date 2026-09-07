@@ -93,13 +93,43 @@ export const createLiabilityEntryBodySchema = z.object({
   remark: optionalTrimmed,
 }).merge(moneyFxInputSchema);
 
+/** Manual rows require bank/person legs; settlement rows may omit legs (server keeps existing). */
+export const updateLiabilityEntryBodySchema = z.object({
+  entryDate: ymd,
+  entryType: z.enum(["receipt", "payment", "contra", "journal"]).optional(),
+  amount: z.number().min(0.01),
+  fromAccountType: z.enum(["bank", "person"]).optional(),
+  fromAccountId: z.string().length(24).optional(),
+  toAccountType: z.enum(["bank", "person"]).optional(),
+  toAccountId: z.string().length(24).optional(),
+  referenceNo: optionalTrimmed,
+  remark: optionalTrimmed,
+}).merge(moneyFxInputSchema);
+
+export const liabilityEntryIdParamSchema = z.object({
+  id: z.string().length(24),
+});
+
 export const listLiabilityEntryQuerySchema = z.object({
   search: optionalTrimmed,
   entryType: z.enum(["receipt", "payment", "contra", "journal"]).optional(),
+  sourceType: z.enum(["manual", "deposit", "withdrawal", "expense", "referral"]).optional(),
+  personId: z.string().length(24).optional(),
+  bankId: z.string().length(24).optional(),
+  /** Legacy either-leg filter; prefer personId / bankId in new UI. */
   accountType: z.enum(["bank", "person"]).optional(),
   accountId: z.string().length(24).optional(),
   entryDate_from: optionalTrimmed,
   entryDate_to: optionalTrimmed,
+  amount_from: z.preprocess(
+    (v) => (v === "" || v === undefined || v === null ? undefined : v),
+    z.coerce.number().min(0).optional(),
+  ),
+  amount_to: z.preprocess(
+    (v) => (v === "" || v === undefined || v === null ? undefined : v),
+    z.coerce.number().min(0).optional(),
+  ),
+  operatedCurrency: optionalTrimmed,
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(500).default(20),
   limit: z.coerce.number().int().positive().max(500).optional(),

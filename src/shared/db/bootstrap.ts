@@ -54,6 +54,16 @@ export async function bootstrapData() {
     await superadmin.save();
   }
 
+  // Grant new entry edit/delete to anyone who already had entry_add (same operational role).
+  await UserModel.updateMany(
+    { role: { $ne: "superadmin" }, permissions: PERMISSIONS.LIABILITY_ENTRY_ADD },
+    {
+      $addToSet: {
+        permissions: { $each: [PERMISSIONS.LIABILITY_ENTRY_EDIT, PERMISSIONS.LIABILITY_ENTRY_DELETE] },
+      },
+    },
+  );
+
   const actor = (await UserModel.findOne({ role: "superadmin" }).select("_id").lean().exec())?._id;
   if (!actor) return;
 
