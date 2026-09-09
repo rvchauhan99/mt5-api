@@ -8,6 +8,7 @@ import { migration004SeedExpenseCancelReasons } from "./004-seed-expense-cancel-
 import { migration005RecomputeExchangeCurrentBalances } from "./005-recompute-exchange-current-balances";
 import { migration006FlipWithdrawalLiabilityLegs } from "./006-flip-withdrawal-liability-legs";
 import { migration007FlipDepositLiabilityLegs } from "./007-flip-deposit-liability-legs";
+import { migration008BackfillLiabilityEntryFx } from "./008-backfill-liability-entry-fx";
 
 export const MIGRATIONS_COLLECTION = "__migrations";
 
@@ -24,6 +25,7 @@ const registry: Migration[] = [
   migration005RecomputeExchangeCurrentBalances,
   migration006FlipWithdrawalLiabilityLegs,
   migration007FlipDepositLiabilityLegs,
+  migration008BackfillLiabilityEntryFx,
 ];
 
 export async function runMigrations(): Promise<void> {
