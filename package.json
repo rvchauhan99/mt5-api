@@ -14,7 +14,9 @@
     "recompute:exchange-balances:dry-run": "tsx src/scripts/recompute-all-exchange-balances.ts",
     "recompute:exchange-balances": "tsx src/scripts/recompute-all-exchange-balances.ts --apply",
     "backfill:business-datetimes:dry-run": "tsx src/scripts/backfill-business-datetimes.ts --dry-run",
-    "backfill:business-datetimes": "tsx src/scripts/backfill-business-datetimes.ts"
+    "backfill:business-datetimes": "tsx src/scripts/backfill-business-datetimes.ts",
+    "backfill:liability-entry-fx:dry-run": "tsx src/scripts/backfill-liability-entry-fx.ts --dry-run",
+    "backfill:liability-entry-fx": "tsx src/scripts/backfill-liability-entry-fx.ts --apply"
   },
   "repository": {
     "type": "git",

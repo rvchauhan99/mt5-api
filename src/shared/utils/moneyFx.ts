@@ -140,17 +140,122 @@ export type MoneyRequestFx = {
   exchangeRate?: number | null;
 };
 
+export type MoneyFxSnapshot = {
+  operatedCurrency: string;
+  operatedAmount: number;
+  exchangeRate: number;
+};
+
+/**
+ * Read an already-resolved FX triple from a money-bearing source document
+ * (expense / deposit / withdrawal). Returns undefined when incomplete.
+ */
+export function moneyFxSnapshotFromDoc(doc: {
+  operatedCurrency?: string | null;
+  operatedAmount?: number | null;
+  exchangeRate?: number | null;
+}): MoneyFxSnapshot | undefined {
+  const operatedCurrency = doc.operatedCurrency?.trim().toUpperCase();
+  if (!operatedCurrency) return undefined;
+  const operatedAmount = doc.operatedAmount != null ? Number(doc.operatedAmount) : NaN;
+  const exchangeRate = doc.exchangeRate != null ? Number(doc.exchangeRate) : NaN;
+  if (!Number.isFinite(operatedAmount) || operatedAmount < 0) return undefined;
+  if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) return undefined;
+  return { operatedCurrency, operatedAmount, exchangeRate };
+}
+
+/**
+ * Snapshot FX for a platform sub-amount (e.g. withdrawal payable vs full amount),
+ * scaling operated amount by platformAmount / doc.amount when they differ.
+ */
+export function moneyFxSnapshotForPlatformAmount(
+  doc: {
+    amount?: number | null;
+    operatedCurrency?: string | null;
+    operatedAmount?: number | null;
+    exchangeRate?: number | null;
+  },
+  platformAmount: number,
+): MoneyFxSnapshot | undefined {
+  const base = moneyFxSnapshotFromDoc(doc);
+  if (!base) return undefined;
+  if (!Number.isFinite(platformAmount) || platformAmount < 0) return undefined;
+  const fullPlatform = Number(doc.amount);
+  if (!Number.isFinite(fullPlatform) || fullPlatform <= 0) return base;
+  if (Math.abs(fullPlatform - platformAmount) < 1e-9) return base;
+  const ratio = platformAmount / fullPlatform;
+  return {
+    operatedCurrency: base.operatedCurrency,
+    operatedAmount: roundMoneyToCurrency(base.operatedAmount * ratio, base.operatedCurrency),
+    exchangeRate: base.exchangeRate,
+  };
+}
+
+/**
+ * Persist a source document's FX snapshot without recomputing platform amount
+ * (avoids rounding drift vs the already-posted ledger amount).
+ */
+export async function resolveStoredMoneySnapshot(input: {
+  platformAmount: number;
+  operatedCurrency: string;
+  operatedAmount: number;
+  exchangeRate: number;
+  fieldLabel?: string;
+}): Promise<ResolvedMoney> {
+  const platformCurrency = await requirePlatformCurrency();
+  const operatedCurrency = input.operatedCurrency.trim().toUpperCase();
+  if (!isSupportedCurrency(operatedCurrency)) {
+    throw new AppError(
+      "validation_error",
+      `Unsupported currency: ${operatedCurrency}`,
+      400,
+    );
+  }
+  if (!Number.isFinite(input.platformAmount) || input.platformAmount < 0) {
+    throw new AppError(
+      "validation_error",
+      `Invalid ${input.fieldLabel ?? "amount"}`,
+      400,
+    );
+  }
+  const sameCurrency = operatedCurrency === platformCurrency;
+  return {
+    amount: roundMoneyToCurrency(input.platformAmount, platformCurrency),
+    platformCurrency,
+    operatedCurrency: operatedCurrency as SupportedCurrency,
+    operatedAmount: roundMoneyToCurrency(input.operatedAmount, operatedCurrency),
+    exchangeRate: sameCurrency ? 1 : roundExchangeRate(input.exchangeRate),
+  };
+}
+
 /**
  * Resolve body money fields against the locked platform currency.
  * `amount` is treated as operated amount when `operatedAmount` is omitted.
+ * When `preservePlatformAmount` is set with a full FX triple, `amount` is kept
+ * as the platform ledger amount (settlement posters from source docs).
  */
 export async function resolveMoneyFromRequest(
   input: MoneyRequestFx,
   options?: {
     fieldLabel?: string;
     minPlatformAmount?: number;
+    preservePlatformAmount?: boolean;
   },
 ): Promise<ResolvedMoney> {
+  if (
+    options?.preservePlatformAmount &&
+    input.operatedAmount != null &&
+    input.operatedCurrency?.trim() &&
+    input.exchangeRate != null
+  ) {
+    return resolveStoredMoneySnapshot({
+      platformAmount: input.amount,
+      operatedCurrency: input.operatedCurrency,
+      operatedAmount: Number(input.operatedAmount),
+      exchangeRate: Number(input.exchangeRate),
+      fieldLabel: options.fieldLabel,
+    });
+  }
   const platformCurrency = await requirePlatformCurrency();
   const operatedAmount = input.operatedAmount ?? input.amount;
   return resolveMoneyInput({

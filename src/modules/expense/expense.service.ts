@@ -26,7 +26,7 @@ import {
   listExpenseQuerySchema,
 } from "./expense.validation";
 import { deleteFile, getSignedUrl, uploadFile } from "../../shared/services/bucket.service";
-import { resolveMoneyFromRequest } from "../../shared/utils/moneyFx";
+import { resolveMoneyFromRequest, moneyFxSnapshotFromDoc } from "../../shared/utils/moneyFx";
 import { getCurrencyMinUnit } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 
@@ -140,6 +140,11 @@ function buildListFilter(q: ExportExpenseQuery, timeZone: string): Record<string
   const bankId = trimUndef(q.bankId);
   if (bankId && Types.ObjectId.isValid(bankId)) {
     conditions.push({ bankId: new Types.ObjectId(bankId) });
+  }
+
+  const liabilityPersonId = trimUndef(q.liabilityPersonId);
+  if (liabilityPersonId && Types.ObjectId.isValid(liabilityPersonId)) {
+    conditions.push({ liabilityPersonId: new Types.ObjectId(liabilityPersonId) });
   }
 
   const dateCond = expenseDateCondition(
@@ -464,6 +469,8 @@ export async function approveExpense(
         sourceExpenseId: String(doc._id),
         referenceNo,
         remark: `Expense settlement for ${String(doc._id)}`,
+        ...moneyFxSnapshotFromDoc(doc),
+        preservePlatformAmount: true,
       },
       actorId,
       requestId,

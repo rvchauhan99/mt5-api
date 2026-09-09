@@ -53,7 +53,7 @@ import { normalizeUtr } from "../../shared/utils/utr";
 import { createLiabilityEntry, deleteLiabilityEntryForReversal } from "../liability/liability.service";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
 import { chunkArray } from "../../shared/utils/chunkArray";
-import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency, resolveMoneyInput } from "../../shared/utils/moneyFx";
+import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency, resolveMoneyInput, moneyFxSnapshotFromDoc } from "../../shared/utils/moneyFx";
 import { getCurrencyMinUnit, isSupportedCurrency, type SupportedCurrency } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 import { resolveMasterExchangeRate } from "../lookup/exchange-rate-lookup.service";
@@ -1097,6 +1097,8 @@ export async function exchangeApproveDeposit(
           sourceDepositId: String(doc._id),
           referenceNo,
           remark: `Deposit settlement UTR ${String(doc.utr ?? "").trim()}`,
+          ...moneyFxSnapshotFromDoc(doc),
+          preservePlatformAmount: true,
         },
         actorId,
         requestId,
@@ -1484,6 +1486,9 @@ async function amendVerifiedDepositPersonSettlement(
 
   const prevUtr = doc.utr;
   const prevAmount = doc.amount;
+  const prevOperatedCurrency = doc.operatedCurrency;
+  const prevOperatedAmount = doc.operatedAmount;
+  const prevExchangeRate = doc.exchangeRate;
   const prevEntryAt = doc.entryAt ? new Date(doc.entryAt.getTime()) : undefined;
   const prevBonus = doc.bonusAmount;
   const prevTotal = doc.totalAmount;
@@ -1555,6 +1560,8 @@ async function amendVerifiedDepositPersonSettlement(
           sourceDepositId: String(doc._id),
           referenceNo,
           remark: `Deposit settlement UTR ${String(doc.utr ?? "").trim()}`,
+          ...moneyFxSnapshotFromDoc(doc),
+          preservePlatformAmount: true,
         },
         actorId,
         requestId,
@@ -1564,6 +1571,9 @@ async function amendVerifiedDepositPersonSettlement(
     } catch (err) {
       doc.utr = prevUtr;
       doc.amount = prevAmount;
+      doc.operatedCurrency = prevOperatedCurrency;
+      doc.operatedAmount = prevOperatedAmount;
+      doc.exchangeRate = prevExchangeRate;
       doc.entryAt = prevEntryAt;
       doc.player = prevPlayer;
       doc.bonusAmount = prevBonus;
@@ -1594,6 +1604,12 @@ async function amendVerifiedDepositPersonSettlement(
             sourceDepositId: String(doc._id),
             referenceNo: referenceNoRb,
             remark: `Deposit settlement UTR ${String(prevUtr ?? "").trim()} (rollback)`,
+            ...moneyFxSnapshotFromDoc({
+              operatedCurrency: prevOperatedCurrency,
+              operatedAmount: prevOperatedAmount,
+              exchangeRate: prevExchangeRate,
+            }),
+            preservePlatformAmount: true,
           },
           actorId,
           requestId,

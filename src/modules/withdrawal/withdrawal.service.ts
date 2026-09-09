@@ -35,7 +35,7 @@ import { enqueueExchangeRecompute } from "../../shared/queue/queue";
 import { invalidateCacheDomains } from "../../shared/cache/domainCache";
 import { logger } from "../../shared/logger";
 import { normalizeUtr } from "../../shared/utils/utr";
-import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency } from "../../shared/utils/moneyFx";
+import { resolveMoneyFromRequest, convertSecondaryAmount, roundMoneyToCurrency, moneyFxSnapshotForPlatformAmount } from "../../shared/utils/moneyFx";
 import { getCurrencyMinUnit } from "../../shared/constants/currencies";
 import { requirePlatformCurrency } from "../settings/settings.service";
 import {
@@ -730,6 +730,8 @@ export async function updateWithdrawalByBanker(
           sourceWithdrawalId: String(doc._id),
           referenceNo,
           remark: `Withdrawal payout UTR ${utrTrim}`,
+          ...moneyFxSnapshotForPlatformAmount(doc, payable),
+          preservePlatformAmount: true,
         },
         actorId,
         requestId,
@@ -1272,6 +1274,9 @@ async function amendWithdrawalPersonSettlement(
 
   const prevUtr = doc.utr;
   const prevAmount = doc.amount;
+  const prevOperatedCurrency = doc.operatedCurrency;
+  const prevOperatedAmount = doc.operatedAmount;
+  const prevExchangeRate = doc.exchangeRate;
   const prevReverseBonus = doc.reverseBonus;
   const prevPayableStored = doc.payableAmount;
   const prevRequestedAt = doc.requestedAt ? new Date(doc.requestedAt.getTime()) : undefined;
@@ -1337,6 +1342,8 @@ async function amendWithdrawalPersonSettlement(
           sourceWithdrawalId: String(doc._id),
           referenceNo,
           remark: `Withdrawal payout UTR ${utrTrim}`,
+          ...moneyFxSnapshotForPlatformAmount(doc, newPayable),
+          preservePlatformAmount: true,
         },
         actorId,
         requestId,
@@ -1346,6 +1353,9 @@ async function amendWithdrawalPersonSettlement(
     } catch (err) {
       doc.utr = prevUtr;
       doc.amount = prevAmount;
+      doc.operatedCurrency = prevOperatedCurrency;
+      doc.operatedAmount = prevOperatedAmount;
+      doc.exchangeRate = prevExchangeRate;
       doc.reverseBonus = prevReverseBonus;
       doc.payableAmount = prevPayableStored;
       doc.requestedAt = prevRequestedAt;
@@ -1374,6 +1384,16 @@ async function amendWithdrawalPersonSettlement(
             sourceWithdrawalId: String(doc._id),
             referenceNo: referenceNoRb,
             remark: `Withdrawal payout UTR ${String(prevUtr ?? "").trim()} (rollback)`,
+            ...moneyFxSnapshotForPlatformAmount(
+              {
+                amount: prevAmount,
+                operatedCurrency: prevOperatedCurrency,
+                operatedAmount: prevOperatedAmount,
+                exchangeRate: prevExchangeRate,
+              },
+              oldPayable,
+            ),
+            preservePlatformAmount: true,
           },
           actorId,
           requestId,

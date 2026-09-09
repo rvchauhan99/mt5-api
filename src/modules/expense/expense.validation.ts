@@ -34,6 +34,7 @@ export const listExpenseQuerySchema = z.object({
   status: z.enum(["pending_audit", "approved", "rejected", "cancelled"]).optional(),
   expenseTypeId: z.string().length(24).optional(),
   bankId: z.string().length(24).optional(),
+  liabilityPersonId: z.string().length(24).optional(),
   expenseDate_from: z.string().optional(),
   expenseDate_to: z.string().optional(),
   expenseDate_op: z.string().optional(),

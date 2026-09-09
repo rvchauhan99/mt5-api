@@ -92,6 +92,7 @@ const expenseSchema = new Schema<ExpenseDocument>(
 expenseSchema.index({ status: 1, createdAt: -1 });
 expenseSchema.index({ expenseTypeId: 1 });
 expenseSchema.index({ bankId: 1 });
+expenseSchema.index({ liabilityPersonId: 1 });
 expenseSchema.index({ expenseDate: 1 });
 expenseSchema.index({ status: 1, expenseDate: -1, _id: -1 });
 expenseSchema.index({ bankId: 1, status: 1, createdAt: -1, _id: -1 });

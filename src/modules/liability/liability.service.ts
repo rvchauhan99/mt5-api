@@ -470,6 +470,8 @@ export async function createLiabilityEntry(
     operatedCurrency?: string;
     operatedAmount?: number;
     exchangeRate?: number;
+    /** When true with FX triple, keep `amount` as platform (settlement from source docs). */
+    preservePlatformAmount?: boolean;
   },
   actorId: string,
   requestId?: string,
@@ -487,7 +489,10 @@ export async function createLiabilityEntry(
       operatedAmount: input.operatedAmount,
       exchangeRate: input.exchangeRate,
     },
-    { minPlatformAmount: getCurrencyMinUnit(await requirePlatformCurrency()) },
+    {
+      minPlatformAmount: getCurrencyMinUnit(await requirePlatformCurrency()),
+      preservePlatformAmount: input.preservePlatformAmount === true,
+    },
   );
 
   const doc = await LiabilityEntryModel.create({
@@ -1022,6 +1027,7 @@ export async function getLiabilityPersonLedger(
   const pid = new Types.ObjectId(personId);
   const person = await LiabilityPersonModel.findById(pid).lean();
   if (!person) throw new AppError("not_found", "Liability person not found", 404);
+  const platformCurrency = await requirePlatformCurrency();
 
   const entries = await LiabilityEntryModel.find({
     $or: [
@@ -1116,6 +1122,42 @@ export async function getLiabilityPersonLedger(
     return idStr;
   };
 
+  type BreakdownAcc = {
+    currency: string;
+    creditOperated: number;
+    debitOperated: number;
+    creditPlatform: number;
+    debitPlatform: number;
+  };
+  const breakdownMap = new Map<string, BreakdownAcc>();
+  const accumulateBreakdown = (
+    currency: string,
+    direction: "credit" | "debit",
+    platformAmt: number,
+    operatedAmt: number,
+  ) => {
+    if (platformAmt <= 0 && operatedAmt <= 0) return;
+    const key = currency || platformCurrency;
+    let acc = breakdownMap.get(key);
+    if (!acc) {
+      acc = {
+        currency: key,
+        creditOperated: 0,
+        debitOperated: 0,
+        creditPlatform: 0,
+        debitPlatform: 0,
+      };
+      breakdownMap.set(key, acc);
+    }
+    if (direction === "credit") {
+      acc.creditPlatform += platformAmt;
+      acc.creditOperated += operatedAmt;
+    } else {
+      acc.debitPlatform += platformAmt;
+      acc.debitOperated += operatedAmt;
+    }
+  };
+
   for (const e of entries) {
     const at = new Date(e.entryDate ?? e.createdAt ?? new Date(0));
     const isBeforeRange = Boolean(from && at < from);
@@ -1143,6 +1185,17 @@ export async function getLiabilityPersonLedger(
       }
       running += delta;
       periodClosingBalance = running;
+      const operatedCurrency = e.operatedCurrency?.trim().toUpperCase() || platformCurrency;
+      const operatedAmount =
+        e.operatedAmount != null && Number.isFinite(Number(e.operatedAmount))
+          ? Number(e.operatedAmount)
+          : e.amount;
+      if (debit > 0) {
+        accumulateBreakdown(operatedCurrency, "debit", debit, operatedAmount);
+      }
+      if (credit > 0) {
+        accumulateBreakdown(operatedCurrency, "credit", credit, operatedAmount);
+      }
       rows.push({
         _id: String(e._id),
         at: formatDateTimeForTimeZone(at, timeZone),
@@ -1167,6 +1220,12 @@ export async function getLiabilityPersonLedger(
     running += delta;
   }
 
+  const operatedCurrencyBreakdown = [...breakdownMap.values()].sort((a, b) => {
+    if (a.currency === platformCurrency) return -1;
+    if (b.currency === platformCurrency) return 1;
+    return a.currency.localeCompare(b.currency);
+  });
+
   const openingBal = person.openingBalance ?? 0;
   return {
     viewMode,
@@ -1187,6 +1246,7 @@ export async function getLiabilityPersonLedger(
     periodClosingBalance,
     periodClosingBalanceAbs: Math.abs(periodClosingBalance),
     periodClosingSide: resolveSideFromBalance(periodClosingBalance),
+    operatedCurrencyBreakdown,
   };
 }
 
@@ -1270,6 +1330,9 @@ export async function exportLiabilityLedgerToBuffer(
     "Running Amount": r.runningBalanceAbs,
     "Running Side": r.runningBalanceSide,
     "Running Balance (signed)": r.runningBalance,
+    "Operated Amount": r.operatedAmount ?? "",
+    "Operated Currency": r.operatedCurrency ?? "",
+    "Exchange Rate": r.exchangeRate ?? "",
     "Reference No": r.referenceNo ?? "",
     Remark: r.remark ?? "",
   }));
@@ -1284,6 +1347,9 @@ export async function exportLiabilityLedgerToBuffer(
     "Running Amount": "",
     "Running Side": "",
     "Running Balance (signed)": "",
+    "Operated Amount": "",
+    "Operated Currency": "",
+    "Exchange Rate": "",
     "Reference No": "",
     Remark: "",
   } as unknown as (typeof exportData)[number]);
