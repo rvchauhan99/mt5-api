@@ -29,6 +29,8 @@ export const PERMISSIONS = {
 
   REPORTS_TRANSACTION_HISTORY: "reports.transaction_history",
   REPORTS_EXPENSE_ANALYSIS: "reports.expense_analysis",
+  REPORTS_BALANCE_SHEET: "reports.balance_sheet",
+  REPORTS_BALANCE_SHEET_ADMIN: "reports.balance_sheet_admin",
   USER_HISTORY_VIEW: "user_history.view",
 
   EXPENSE_ADD: "expense.add",
