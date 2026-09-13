@@ -65,15 +65,28 @@ Groups auto-seed on first API call if the collection is empty (`ensureDefaultGro
 - **Banks:** Same statement logic as dashboard / bank closing (deposits +, withdrawals −, expenses −, transfers, settlements, settled IB).
 - **Persons:** Positive closing → Receivables (asset); negative → Payables (liability).
 - **Exchange float:** Period opening/closing from deposits, withdrawals, topups.
-- **Retained earnings:** Period net P&L = verified deposits − approved withdrawals − approved expenses − IB accruals.
+- **Expenses Payable / Pending Withdrawals / IB accrued:** outstanding **stock as of `toDate`** (not period-dated flow). Pending audit expenses with `expenseDate ≤ toDate`; requested withdrawals with business date ≤ toDate; accrued IB with `createdAt ≤ toDate`.
+- **Retained earnings:** Period net P&L = verified deposits − approved withdrawals − approved expenses − IB accruals (within From–To). UI label: Period Net P&L (not cumulative RE).
 - Sheet may show a small **difference** when operational sources are not full double-entry; `isBalanced` is true when `|difference| ≤ 0.01`.
+
+## Movement tabs API
+
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| GET | `/movements` | `reports.balance_sheet` | Paginated deposits / withdrawals / expenses / liability / transfers |
+| GET | `/movements/export` | `reports.balance_sheet` | Excel export of movements |
+
+Query: `type` (required), `fromDate`, `toDate`, optional `exchangeId`, `bankId`, `personId`, `status`, `search`, `page`, `pageSize`.
 
 ## Frontend
 
 - Route: `/reports/balance-sheet`
 - Nav: Reports → Balance Sheet
 - Components under `mt5-web/src/modules/reports/components/`
+- Tabs: Statement, Deposits, Withdrawals, Expenses, Liabilities, Transfers
 
 ## Ops
 
 After deploy, ensure migrations run (app boot or `run-migrations-once`). Existing admins get new permission keys on next bootstrap/superadmin sync; grant `reports.balance_sheet` to sub-admins via Sub Admin permission grid.
+
+**Release note:** Expenses Payable / Pending Withdrawals / IB accrued totals may change vs prior builds because they are now as-of outstanding stock rather than in-period only.

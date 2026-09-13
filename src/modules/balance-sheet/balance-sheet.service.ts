@@ -622,15 +622,17 @@ async function getPendingWithdrawalLedgers(
   exchangeObjectId: Types.ObjectId | null,
 ): Promise<BalanceSheetLedger[]> {
   const { WithdrawalModel } = await import("../withdrawal/withdrawal.model");
-  const { fromUtc, toUtc } = bounds;
+  const { toUtc } = bounds;
 
-  const match: Record<string, unknown> = {
+  // Outstanding stock as of toDate (requestedAt/createdAt <= toUtc)
+  const txExpr = { $ifNull: ["$requestedAt", "$createdAt"] };
+  const asOfMatch: Record<string, unknown> = {
     status: "requested",
-    ...businessDateRangeExpr("requestedAt", fromUtc, toUtc),
+    $expr: { $lte: [txExpr, toUtc] },
   };
 
   const pipeline: Record<string, unknown>[] = [
-    { $match: match },
+    { $match: asOfMatch },
     { $lookup: { from: "players", localField: "player", foreignField: "_id", as: "playerDoc" } },
     { $unwind: { path: "$playerDoc", preserveNullAndEmptyArrays: true } },
   ];
@@ -666,12 +668,13 @@ async function getPendingWithdrawalLedgers(
 }
 
 async function getExpensesPayableLedgers(bounds: PeriodBounds): Promise<BalanceSheetLedger[]> {
-  const { fromUtc, toUtc } = bounds;
+  const { toUtc } = bounds;
+  // Outstanding stock as of toDate (pending_audit with expenseDate <= toDate)
   const rows = await ExpenseModel.aggregate<{ totalAmount: number; count: number }>([
     {
       $match: {
         status: "pending_audit",
-        expenseDate: { $gte: fromUtc, $lte: toUtc },
+        expenseDate: { $lte: toUtc },
       },
     },
     { $group: { _id: null, totalAmount: { $sum: "$amount" }, count: { $sum: 1 } } },
@@ -697,10 +700,11 @@ async function getIbCommissionLedgers(
   bounds: PeriodBounds,
   exchangeObjectId: Types.ObjectId | null,
 ): Promise<BalanceSheetLedger[]> {
-  const { fromUtc, toUtc } = bounds;
+  const { toUtc } = bounds;
+  // Outstanding stock as of toDate (accrued with createdAt <= toDate)
   const match: Record<string, unknown> = {
     status: "accrued",
-    createdAt: { $gte: fromUtc, $lte: toUtc },
+    createdAt: { $lte: toUtc },
   };
   if (exchangeObjectId) match.exchangeId = exchangeObjectId;
 
@@ -1230,60 +1234,98 @@ export async function getBalanceSheetDrilldown(
   if (!fromUtc || !toUtc) throw new AppError("VALIDATION_ERROR", "Invalid date range", 400);
 
   const skip = (query.page - 1) * query.pageSize;
-  const rows: Array<Record<string, unknown>> = [];
-  let total = 0;
+  const exchangeObjectId =
+    query.exchangeId && Types.ObjectId.isValid(query.exchangeId)
+      ? new Types.ObjectId(query.exchangeId)
+      : null;
+
+  type DrillRow = {
+    type: string;
+    date: Date | string | null | undefined;
+    amount: number;
+    direction: string;
+    reference?: string;
+    status?: string;
+  };
+
+  const paginate = (all: DrillRow[]) => {
+    all.sort(
+      (a, b) => new Date(String(b.date ?? 0)).getTime() - new Date(String(a.date ?? 0)).getTime(),
+    );
+    return {
+      rows: all.slice(skip, skip + query.pageSize),
+      meta: { page: query.page, pageSize: query.pageSize, total: all.length },
+    };
+  };
 
   if (query.ledgerType === "bank" && Types.ObjectId.isValid(query.ledgerId)) {
     const bankId = new Types.ObjectId(query.ledgerId);
     const { DepositModel } = await import("../deposit/deposit.model");
     const { WithdrawalModel } = await import("../withdrawal/withdrawal.model");
 
-    const [deposits, withdrawals, expenses, liabilities] = await Promise.all([
-      DepositModel.find({
-        bankId,
-        status: { $in: ["verified", "finalized"] },
-        ...businessDateRangeExpr("entryAt", fromUtc, toUtc),
-      })
-        .select({ amount: 1, utr: 1, entryAt: 1, createdAt: 1, status: 1 })
-        .sort({ entryAt: -1 })
-        .limit(query.pageSize)
-        .lean(),
-      WithdrawalModel.find({
-        payoutBankId: bankId,
-        status: { $in: ["approved", "finalized"] },
-        ...businessDateRangeExpr("requestedAt", fromUtc, toUtc),
-      })
-        .select({ amount: 1, payableAmount: 1, utr: 1, requestedAt: 1, createdAt: 1, status: 1 })
-        .sort({ requestedAt: -1 })
-        .limit(query.pageSize)
-        .lean(),
-      ExpenseModel.find({
-        bankId,
-        status: "approved",
-        expenseDate: { $gte: fromUtc, $lte: toUtc },
-      })
-        .select({ amount: 1, description: 1, expenseDate: 1, status: 1 })
-        .sort({ expenseDate: -1 })
-        .limit(query.pageSize)
-        .lean(),
-      LiabilityEntryModel.find({
-        $or: [
-          { fromAccountType: "bank", fromAccountId: bankId },
-          { toAccountType: "bank", toAccountId: bankId },
-        ],
-        ...liabilityDateRangeExpr(fromUtc, toUtc),
-      })
-        .select({ amount: 1, entryDate: 1, entryType: 1, remark: 1, fromAccountType: 1, toAccountType: 1 })
-        .sort({ entryDate: -1 })
-        .limit(query.pageSize)
-        .lean(),
-    ]);
+    const [deposits, withdrawals, expenses, liabilities, settlements, referrals] =
+      await Promise.all([
+        DepositModel.find({
+          bankId,
+          status: { $in: ["verified", "finalized"] },
+          ...businessDateRangeExpr("entryAt", fromUtc, toUtc),
+        })
+          .select({ amount: 1, utr: 1, entryAt: 1, createdAt: 1, status: 1 })
+          .lean(),
+        WithdrawalModel.find({
+          payoutBankId: bankId,
+          status: { $in: ["approved", "finalized"] },
+          ...businessDateRangeExpr("requestedAt", fromUtc, toUtc),
+        })
+          .select({ amount: 1, payableAmount: 1, utr: 1, requestedAt: 1, createdAt: 1, status: 1 })
+          .lean(),
+        ExpenseModel.find({
+          bankId,
+          status: "approved",
+          settlementAccountType: "bank",
+          expenseDate: { $gte: fromUtc, $lte: toUtc },
+        })
+          .select({ amount: 1, description: 1, expenseDate: 1, status: 1 })
+          .lean(),
+        LiabilityEntryModel.find({
+          $or: [
+            { fromAccountType: "bank", fromAccountId: bankId },
+            { toAccountType: "bank", toAccountId: bankId },
+          ],
+          ...liabilityDateRangeExpr(fromUtc, toUtc),
+        })
+          .select({
+            amount: 1,
+            entryDate: 1,
+            entryType: 1,
+            remark: 1,
+            fromAccountType: 1,
+            toAccountType: 1,
+            createdAt: 1,
+          })
+          .lean(),
+        BankBalanceSettlementModel.find({
+          bankId,
+          effectiveAt: { $gte: fromUtc, $lte: toUtc },
+        })
+          .select({ signedAmount: 1, effectiveAt: 1, reason: 1 })
+          .lean(),
+        ReferralAccrualModel.find({
+          bankId,
+          status: "settled",
+          settlementAccountType: "bank",
+          createdAt: { $gte: fromUtc, $lte: toUtc },
+        })
+          .select({ accruedAmount: 1, createdAt: 1, settledAt: 1, settlementRemark: 1, status: 1 })
+          .lean(),
+      ]);
 
+    const rows: DrillRow[] = [];
     for (const d of deposits) {
       rows.push({
         type: "deposit",
         date: d.entryAt ?? d.createdAt,
-        amount: d.amount,
+        amount: asNumber(d.amount),
         direction: "in",
         reference: d.utr,
         status: d.status,
@@ -1293,7 +1335,7 @@ export async function getBalanceSheetDrilldown(
       rows.push({
         type: "withdrawal",
         date: w.requestedAt ?? w.createdAt,
-        amount: w.payableAmount ?? w.amount,
+        amount: asNumber(w.payableAmount ?? w.amount),
         direction: "out",
         reference: w.utr,
         status: w.status,
@@ -1303,7 +1345,7 @@ export async function getBalanceSheetDrilldown(
       rows.push({
         type: "expense",
         date: e.expenseDate,
-        amount: e.amount,
+        amount: asNumber(e.amount),
         direction: "out",
         reference: e.description,
         status: e.status,
@@ -1312,50 +1354,59 @@ export async function getBalanceSheetDrilldown(
     for (const le of liabilities) {
       rows.push({
         type: "liability",
-        date: le.entryDate,
-        amount: le.amount,
+        date: le.entryDate ?? le.createdAt,
+        amount: asNumber(le.amount),
         direction: le.fromAccountType === "bank" ? "out" : "in",
         reference: le.remark || le.entryType,
         status: le.entryType,
       });
     }
-    rows.sort(
-      (a, b) => new Date(String(b.date)).getTime() - new Date(String(a.date)).getTime(),
-    );
-    total = rows.length;
-    return {
-      rows: rows.slice(skip, skip + query.pageSize),
-      meta: { page: query.page, pageSize: query.pageSize, total },
-    };
+    for (const s of settlements) {
+      const amt = asNumber(s.signedAmount);
+      rows.push({
+        type: "settlement",
+        date: s.effectiveAt,
+        amount: Math.abs(amt),
+        direction: amt >= 0 ? "in" : "out",
+        reference: s.reason,
+        status: "settlement",
+      });
+    }
+    for (const r of referrals) {
+      rows.push({
+        type: "referral",
+        date: r.settledAt ?? r.createdAt,
+        amount: asNumber(r.accruedAmount),
+        direction: "out",
+        reference: r.settlementRemark || "IB settle",
+        status: r.status,
+      });
+    }
+    return paginate(rows);
   }
 
   if (query.ledgerType === "person" && Types.ObjectId.isValid(query.ledgerId)) {
     const personId = new Types.ObjectId(query.ledgerId);
+    const match = {
+      $or: [
+        { fromAccountType: "person", fromAccountId: personId },
+        { toAccountType: "person", toAccountId: personId },
+      ],
+      ...liabilityDateRangeExpr(fromUtc, toUtc),
+    };
     const [list, count] = await Promise.all([
-      LiabilityEntryModel.find({
-        $or: [
-          { fromAccountType: "person", fromAccountId: personId },
-          { toAccountType: "person", toAccountId: personId },
-        ],
-        ...liabilityDateRangeExpr(fromUtc, toUtc),
-      })
+      LiabilityEntryModel.find(match)
         .sort({ entryDate: -1 })
         .skip(skip)
         .limit(query.pageSize)
         .lean(),
-      LiabilityEntryModel.countDocuments({
-        $or: [
-          { fromAccountType: "person", fromAccountId: personId },
-          { toAccountType: "person", toAccountId: personId },
-        ],
-        ...liabilityDateRangeExpr(fromUtc, toUtc),
-      }),
+      LiabilityEntryModel.countDocuments(match),
     ]);
     return {
       rows: list.map((le) => ({
         type: "liability",
         date: le.entryDate,
-        amount: le.amount,
+        amount: asNumber(le.amount),
         direction: le.fromAccountType === "person" ? "out" : "in",
         reference: le.remark || le.referenceNo || le.entryType,
         status: le.entryType,
@@ -1364,10 +1415,289 @@ export async function getBalanceSheetDrilldown(
     };
   }
 
+  // Synthetic / computed ledgers
+  if (query.ledgerId === "expenses_payable" || query.ledgerType === "expense") {
+    const list = await ExpenseModel.find({
+      status: "pending_audit",
+      expenseDate: { $lte: toUtc },
+    })
+      .select({ amount: 1, description: 1, expenseDate: 1, status: 1 })
+      .sort({ expenseDate: -1 })
+      .lean();
+    return paginate(
+      list.map((e) => ({
+        type: "expense",
+        date: e.expenseDate,
+        amount: asNumber(e.amount),
+        direction: "out",
+        reference: e.description,
+        status: e.status,
+      })),
+    );
+  }
+
+  if (query.ledgerId === "pending_withdrawals" || query.ledgerType === "withdrawal") {
+    const { WithdrawalModel } = await import("../withdrawal/withdrawal.model");
+    const txExpr = { $ifNull: ["$requestedAt", "$createdAt"] };
+    const pipeline: Record<string, unknown>[] = [
+      {
+        $match: {
+          status: "requested",
+          $expr: { $lte: [txExpr, toUtc] },
+        },
+      },
+      { $lookup: { from: "players", localField: "player", foreignField: "_id", as: "playerDoc" } },
+      { $unwind: { path: "$playerDoc", preserveNullAndEmptyArrays: true } },
+    ];
+    if (exchangeObjectId) {
+      pipeline.push({ $match: { "playerDoc.exchange": exchangeObjectId } });
+    }
+    pipeline.push({
+      $project: {
+        amount: 1,
+        payableAmount: 1,
+        utr: 1,
+        requestedAt: 1,
+        createdAt: 1,
+        status: 1,
+      },
+    });
+    const list = await WithdrawalModel.aggregate(pipeline as never);
+    return paginate(
+      list.map((w: { payableAmount?: number; amount?: number; requestedAt?: Date; createdAt?: Date; utr?: string; status?: string }) => ({
+        type: "withdrawal",
+        date: w.requestedAt ?? w.createdAt,
+        amount: asNumber(w.payableAmount ?? w.amount),
+        direction: "out",
+        reference: w.utr,
+        status: w.status,
+      })),
+    );
+  }
+
+  if (query.ledgerId === "ib_commissions" || query.ledgerType === "referral") {
+    const match: Record<string, unknown> = {
+      status: "accrued",
+      createdAt: { $lte: toUtc },
+    };
+    if (exchangeObjectId) match.exchangeId = exchangeObjectId;
+    const list = await ReferralAccrualModel.find(match)
+      .select({ accruedAmount: 1, createdAt: 1, status: 1, settlementRemark: 1 })
+      .sort({ createdAt: -1 })
+      .lean();
+    return paginate(
+      list.map((r) => ({
+        type: "referral",
+        date: r.createdAt,
+        amount: asNumber(r.accruedAmount),
+        direction: "out",
+        reference: r.settlementRemark || "IB accrued",
+        status: r.status,
+      })),
+    );
+  }
+
+  if (query.ledgerId === "retained_earnings" || query.ledgerType === "computed") {
+    const { DepositModel } = await import("../deposit/deposit.model");
+    const { WithdrawalModel } = await import("../withdrawal/withdrawal.model");
+    let scopedPlayerIds: Types.ObjectId[] | null = null;
+    if (exchangeObjectId) {
+      const { PlayerModel } = await import("../player/player.model");
+      scopedPlayerIds = await PlayerModel.distinct("_id", {
+        exchange: exchangeObjectId,
+        isMigratedOldUser: false,
+      });
+    }
+    const depositMatch: Record<string, unknown> = {
+      status: { $in: ["verified", "finalized"] },
+      ...businessDateRangeExpr("entryAt", fromUtc, toUtc),
+    };
+    const withdrawalMatch: Record<string, unknown> = {
+      status: { $in: ["approved", "finalized"] },
+      ...businessDateRangeExpr("requestedAt", fromUtc, toUtc),
+    };
+    if (scopedPlayerIds) {
+      depositMatch.player = { $in: scopedPlayerIds };
+      withdrawalMatch.player = { $in: scopedPlayerIds };
+    }
+    const [deposits, withdrawals, expenses, ib] = await Promise.all([
+      DepositModel.find(depositMatch)
+        .select({ amount: 1, entryAt: 1, createdAt: 1, utr: 1, status: 1 })
+        .lean(),
+      WithdrawalModel.find(withdrawalMatch)
+        .select({ amount: 1, payableAmount: 1, requestedAt: 1, createdAt: 1, utr: 1, status: 1 })
+        .lean(),
+      ExpenseModel.find({
+        status: "approved",
+        expenseDate: { $gte: fromUtc, $lte: toUtc },
+      })
+        .select({ amount: 1, expenseDate: 1, description: 1, status: 1 })
+        .lean(),
+      ReferralAccrualModel.find({
+        status: { $in: ["accrued", "settled"] },
+        createdAt: { $gte: fromUtc, $lte: toUtc },
+        ...(exchangeObjectId ? { exchangeId: exchangeObjectId } : {}),
+      })
+        .select({ accruedAmount: 1, createdAt: 1, status: 1 })
+        .lean(),
+    ]);
+    const rows: DrillRow[] = [];
+    for (const d of deposits) {
+      rows.push({
+        type: "deposit",
+        date: d.entryAt ?? d.createdAt,
+        amount: asNumber(d.amount),
+        direction: "in",
+        reference: d.utr,
+        status: d.status,
+      });
+    }
+    for (const w of withdrawals) {
+      rows.push({
+        type: "withdrawal",
+        date: w.requestedAt ?? w.createdAt,
+        amount: asNumber(w.payableAmount ?? w.amount),
+        direction: "out",
+        reference: w.utr,
+        status: w.status,
+      });
+    }
+    for (const e of expenses) {
+      rows.push({
+        type: "expense",
+        date: e.expenseDate,
+        amount: asNumber(e.amount),
+        direction: "out",
+        reference: e.description,
+        status: e.status,
+      });
+    }
+    for (const r of ib) {
+      rows.push({
+        type: "referral",
+        date: r.createdAt,
+        amount: asNumber(r.accruedAmount),
+        direction: "out",
+        reference: "IB",
+        status: r.status,
+      });
+    }
+    return paginate(rows);
+  }
+
+  if (query.ledgerType === "exchange" && Types.ObjectId.isValid(query.ledgerId)) {
+    const { DepositModel } = await import("../deposit/deposit.model");
+    const { WithdrawalModel } = await import("../withdrawal/withdrawal.model");
+    const { PlayerModel } = await import("../player/player.model");
+    const exchangeId = new Types.ObjectId(query.ledgerId);
+    const playerIds = await PlayerModel.distinct("_id", {
+      exchange: exchangeId,
+      isMigratedOldUser: false,
+    });
+    const [deposits, withdrawals, topups] = await Promise.all([
+      DepositModel.find({
+        player: { $in: playerIds },
+        status: { $in: ["verified", "finalized"] },
+        ...businessDateRangeExpr("entryAt", fromUtc, toUtc),
+      })
+        .select({ amount: 1, entryAt: 1, createdAt: 1, utr: 1, status: 1 })
+        .lean(),
+      WithdrawalModel.find({
+        player: { $in: playerIds },
+        status: { $in: ["approved", "finalized"] },
+        ...businessDateRangeExpr("requestedAt", fromUtc, toUtc),
+      })
+        .select({ amount: 1, payableAmount: 1, requestedAt: 1, createdAt: 1, utr: 1, status: 1 })
+        .lean(),
+      ExchangeTopupModel.find({
+        exchangeId,
+        createdAt: { $gte: fromUtc, $lte: toUtc },
+      })
+        .select({ amount: 1, createdAt: 1, remark: 1 })
+        .lean(),
+    ]);
+    const rows: DrillRow[] = [];
+    for (const d of deposits) {
+      rows.push({
+        type: "deposit",
+        date: d.entryAt ?? d.createdAt,
+        amount: asNumber(d.amount),
+        direction: "in",
+        reference: d.utr,
+        status: d.status,
+      });
+    }
+    for (const w of withdrawals) {
+      rows.push({
+        type: "withdrawal",
+        date: w.requestedAt ?? w.createdAt,
+        amount: asNumber(w.payableAmount ?? w.amount),
+        direction: "out",
+        reference: w.utr,
+        status: w.status,
+      });
+    }
+    for (const t of topups) {
+      rows.push({
+        type: "topup",
+        date: t.createdAt,
+        amount: asNumber(t.amount),
+        direction: "out",
+        reference: t.remark || "Exchange topup",
+        status: "topup",
+      });
+    }
+    return paginate(rows);
+  }
+
   return {
     rows: [],
     meta: { page: query.page, pageSize: query.pageSize, total: 0 },
   };
+}
+
+export async function exportBalanceSheetDrilldownToBuffer(
+  query: {
+    fromDate: string;
+    toDate: string;
+    exchangeId?: string;
+    ledgerId: string;
+    ledgerType: BalanceSheetDrilldownQuery["ledgerType"];
+  },
+  options?: { timeZone?: string },
+): Promise<Buffer> {
+  const data = await getBalanceSheetDrilldown(
+    {
+      ...query,
+      page: 1,
+      pageSize: 5000,
+    } as BalanceSheetDrilldownQuery,
+    options,
+  );
+
+  const sheet = data.rows.map((r) => ({
+    Date: r.date ? new Date(String(r.date)).toISOString() : "",
+    Type: r.type,
+    Amount: r.amount,
+    Direction: r.direction,
+    Reference: r.reference ?? "",
+    Status: r.status ?? "",
+  }));
+
+  return generateMultiSheetExcelBuffer([
+    {
+      name: "Ledger",
+      data: sheet,
+      columns: [
+        { header: "Date", key: "Date" },
+        { header: "Type", key: "Type" },
+        { header: "Amount", key: "Amount" },
+        { header: "Direction", key: "Direction" },
+        { header: "Reference", key: "Reference" },
+        { header: "Status", key: "Status" },
+      ],
+    },
+  ]);
 }
 
 function flattenGroups(

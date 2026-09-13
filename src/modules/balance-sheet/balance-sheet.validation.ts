@@ -60,6 +60,25 @@ export const balanceSheetDrilldownQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(200).default(50),
 });
 
+export const balanceSheetDrilldownExportQuerySchema = z.object({
+  fromDate: ymd,
+  toDate: ymd,
+  exchangeId: optionalObjectId,
+  ledgerId: z.string().min(1),
+  ledgerType: z.enum([
+    "bank",
+    "exchange",
+    "person",
+    "player",
+    "expense",
+    "referral",
+    "withdrawal",
+    "deposit",
+    "manual",
+    "computed",
+  ]),
+});
+
 export const createBalanceSheetSnapshotBodySchema = z.object({
   fromDate: ymd,
   toDate: ymd,
@@ -67,6 +86,22 @@ export const createBalanceSheetSnapshotBodySchema = z.object({
   note: optionalTrimmed,
 });
 
+export const balanceSheetMovementsQuerySchema = z.object({
+  type: z.enum(["deposit", "withdrawal", "expense", "liability", "transfer"]),
+  fromDate: ymd,
+  toDate: ymd,
+  exchangeId: optionalObjectId,
+  bankId: optionalObjectId,
+  personId: optionalObjectId,
+  status: optionalTrimmed,
+  search: optionalTrimmed,
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(200).default(25),
+  sort: optionalTrimmed,
+});
+
 export type BalanceSheetQuery = z.infer<typeof balanceSheetQuerySchema>;
 export type BalanceSheetDrilldownQuery = z.infer<typeof balanceSheetDrilldownQuerySchema>;
+export type BalanceSheetDrilldownExportQuery = z.infer<typeof balanceSheetDrilldownExportQuerySchema>;
 export type CreateBalanceSheetSnapshotBody = z.infer<typeof createBalanceSheetSnapshotBodySchema>;
+export type BalanceSheetMovementsQuery = z.infer<typeof balanceSheetMovementsQuerySchema>;

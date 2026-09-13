@@ -72,3 +72,25 @@ describe("balance sheet accounting identity helpers", () => {
     expect(Math.abs(difference) <= balanceSheetMath.BALANCE_TOLERANCE).toBe(false);
   });
 });
+
+describe("as-of liability stock semantics", () => {
+  it("documents that outstanding stock uses toDate upper bound only", () => {
+    // Period flow would require both fromUtc and toUtc; stock uses <= toUtc.
+    const fromUtc = new Date("2026-03-01T00:00:00.000Z");
+    const toUtc = new Date("2026-03-31T23:59:59.999Z");
+    const expenseDateBeforePeriod = new Date("2026-02-15T00:00:00.000Z");
+    const expenseDateInPeriod = new Date("2026-03-10T00:00:00.000Z");
+    const expenseDateAfter = new Date("2026-04-01T00:00:00.000Z");
+
+    const isAsOfStock = (expenseDate: Date) => expenseDate.getTime() <= toUtc.getTime();
+    const isPeriodFlow = (expenseDate: Date) =>
+      expenseDate.getTime() >= fromUtc.getTime() && expenseDate.getTime() <= toUtc.getTime();
+
+    expect(isAsOfStock(expenseDateBeforePeriod)).toBe(true);
+    expect(isPeriodFlow(expenseDateBeforePeriod)).toBe(false);
+    expect(isAsOfStock(expenseDateInPeriod)).toBe(true);
+    expect(isPeriodFlow(expenseDateInPeriod)).toBe(true);
+    expect(isAsOfStock(expenseDateAfter)).toBe(false);
+    expect(isPeriodFlow(expenseDateAfter)).toBe(false);
+  });
+});
