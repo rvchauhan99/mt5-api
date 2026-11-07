@@ -6,6 +6,10 @@ import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
 import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
+import {
+  getBankAvailableBalance,
+  syncBankCurrentBalancesFromLedger,
+} from "../bank/bankClosingBalance";
 import { ExpenseTypeModel } from "../masters/expense-type.model";
 import { composeRejectReasonText, loadActiveReasonForReject } from "../reason/reasonLookup.service";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
@@ -387,31 +391,42 @@ export async function approveExpense(
     if (!bank) throw new AppError("not_found", "Bank not found", 404);
     if (bank.status !== "active") throw new AppError("business_rule_error", "Bank is not active", 400);
 
-    const prevBal = bank.currentBalance ?? bank.openingBalance;
-    if (amount > prevBal) {
+    const bankIdStr = String(bank._id);
+    const available = await getBankAvailableBalance(bankIdStr);
+    if (amount > available) {
       throw new AppError("business_rule_error", "Insufficient bank balance for this expense", 400);
     }
 
-    const bankBalanceAfter = prevBal - amount;
-    bank.currentBalance = bankBalanceAfter;
-    await bank.save();
+    const bankBalanceAfter = available - amount;
+    const prevBankId = doc.bankId;
+    const prevBankName = doc.bankName;
+
+    doc.bankId = bank._id;
+    doc.bankName = bankDisplayName(bank);
+    doc.settlementAccountType = "bank";
+    doc.liabilityPersonId = undefined;
+    doc.liabilityPersonName = "";
+    doc.liabilityEntryId = undefined;
+    doc.status = "approved";
+    doc.approvedBy = new Types.ObjectId(actorId);
+    doc.approvedAt = new Date();
+    doc.bankBalanceAfter = bankBalanceAfter;
+    doc.updatedBy = new Types.ObjectId(actorId);
 
     try {
-      doc.bankId = bank._id;
-      doc.bankName = bankDisplayName(bank);
-      doc.settlementAccountType = "bank";
-      doc.liabilityPersonId = undefined;
-      doc.liabilityPersonName = "";
-      doc.liabilityEntryId = undefined;
-      doc.status = "approved";
-      doc.approvedBy = new Types.ObjectId(actorId);
-      doc.approvedAt = new Date();
-      doc.bankBalanceAfter = bankBalanceAfter;
-      doc.updatedBy = new Types.ObjectId(actorId);
       await doc.save();
+      await syncBankCurrentBalancesFromLedger([bankIdStr]);
     } catch (err) {
-      bank.currentBalance = prevBal;
-      await bank.save();
+      doc.status = "pending_audit";
+      doc.approvedBy = undefined;
+      doc.approvedAt = undefined;
+      doc.settlementAccountType = undefined;
+      doc.bankId = prevBankId;
+      doc.bankName = prevBankName ?? "";
+      doc.bankBalanceAfter = undefined;
+      doc.updatedBy = new Types.ObjectId(actorId);
+      await doc.save().catch(() => undefined);
+      await syncBankCurrentBalancesFromLedger([bankIdStr]).catch(() => undefined);
       throw err;
     }
 
@@ -581,8 +596,9 @@ export async function cancelApprovedExpense(
     nextBalance?: number;
     delta?: number;
   } = {};
-  let rollbackBank: (() => Promise<void>) | null = null;
   const liabilityEntryIdBefore = doc.liabilityEntryId ? String(doc.liabilityEntryId) : undefined;
+  const bankIdForSync =
+    doc.settlementAccountType === "bank" && doc.bankId ? String(doc.bankId) : undefined;
 
   if (doc.settlementAccountType === "bank") {
     if (!doc.bankId) {
@@ -591,20 +607,12 @@ export async function cancelApprovedExpense(
     const bank = await BankModel.findById(doc.bankId);
     if (!bank) throw new AppError("not_found", "Bank not found", 404);
 
-    const prevBal = bank.currentBalance ?? bank.openingBalance;
-    const nextBal = prevBal + amount;
-    bank.currentBalance = nextBal;
-    await bank.save();
-
+    const prevBal = await getBankAvailableBalance(String(bank._id));
     bankReversalMeta = {
       bankId: String(bank._id),
       previousBalance: prevBal,
-      nextBalance: nextBal,
+      nextBalance: prevBal + amount,
       delta: amount,
-    };
-    rollbackBank = async () => {
-      bank.currentBalance = prevBal;
-      await bank.save();
     };
   } else if (doc.settlementAccountType === "person") {
     if (!doc.liabilityEntryId) {
@@ -628,8 +636,11 @@ export async function cancelApprovedExpense(
     doc.liabilityEntryId = undefined;
     doc.updatedBy = new Types.ObjectId(actorId);
     await doc.save();
+    if (bankIdForSync) {
+      const totals = await syncBankCurrentBalancesFromLedger([bankIdForSync]);
+      bankReversalMeta.nextBalance = Number(totals.get(bankIdForSync) ?? bankReversalMeta.nextBalance);
+    }
   } catch (err) {
-    if (rollbackBank) await rollbackBank();
     if (doc.settlementAccountType === "person" && liabilityEntryIdBefore) {
       throw new AppError(
         "business_rule_error",

@@ -4,6 +4,7 @@ import type { z } from "zod";
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
+import { syncBankCurrentBalancesFromLedger } from "../bank/bankClosingBalance";
 import { DepositModel } from "../deposit/deposit.model";
 import { ExpenseModel } from "../expense/expense.model";
 import { WithdrawalModel } from "../withdrawal/withdrawal.model";
@@ -522,6 +523,14 @@ export async function createLiabilityEntry(
   if (input.fromAccountType === "person") recalcTargets.add(input.fromAccountId);
   if (input.toAccountType === "person") recalcTargets.add(input.toAccountId);
   await Promise.all([...recalcTargets].map((personId) => recomputePersonRollup(personId)));
+  await syncBankCurrentBalancesFromLedger(
+    collectBankIdsFromLiabilityLegs({
+      fromAccountType: input.fromAccountType,
+      fromAccountId: input.fromAccountId,
+      toAccountType: input.toAccountType,
+      toAccountId: input.toAccountId,
+    }),
+  );
 
   await createAuditLog({
     actorId,
@@ -581,6 +590,31 @@ function isSourcedLiabilityEntry(doc: {
     doc.sourceWithdrawalId != null ||
     doc.sourceReferralAccrualId != null
   );
+}
+
+function collectBankIdsFromLiabilityLegs(
+  ...legs: Array<
+    | {
+        fromAccountType?: string | null;
+        fromAccountId?: unknown;
+        toAccountType?: string | null;
+        toAccountId?: unknown;
+      }
+    | null
+    | undefined
+  >
+): string[] {
+  const ids = new Set<string>();
+  for (const leg of legs) {
+    if (!leg) continue;
+    if (leg.fromAccountType === "bank" && leg.fromAccountId) {
+      ids.add(String(leg.fromAccountId));
+    }
+    if (leg.toAccountType === "bank" && leg.toAccountId) {
+      ids.add(String(leg.toAccountId));
+    }
+  }
+  return [...ids];
 }
 
 /** Clear deposit/withdrawal/expense/referral back-links that point at this liability entry. */
@@ -672,6 +706,7 @@ export async function updateLiabilityEntry(
 
     await syncSourceAmountFromLiabilityEntry(existing, money.amount);
     await Promise.all([...recalcTargets].map((personId) => recomputePersonRollup(personId)));
+    await syncBankCurrentBalancesFromLedger(collectBankIdsFromLiabilityLegs(existing));
 
     await createAuditLog({
       actorId,
@@ -760,6 +795,14 @@ export async function updateLiabilityEntry(
   if (!updated) throw new AppError("not_found", "Liability entry not found", 404);
 
   await Promise.all([...recalcTargets].map((personId) => recomputePersonRollup(personId)));
+  await syncBankCurrentBalancesFromLedger(
+    collectBankIdsFromLiabilityLegs(existing, {
+      fromAccountType: manualInput.fromAccountType,
+      fromAccountId: manualInput.fromAccountId,
+      toAccountType: manualInput.toAccountType,
+      toAccountId: manualInput.toAccountId,
+    }),
+  );
 
   await createAuditLog({
     actorId,
@@ -821,8 +864,10 @@ export async function deleteLiabilityEntryForReversal(entryId: string, actorId: 
   const recalcTargets = new Set<string>();
   if (doc.fromAccountType === "person") recalcTargets.add(String(doc.fromAccountId));
   if (doc.toAccountType === "person") recalcTargets.add(String(doc.toAccountId));
+  const bankIds = collectBankIdsFromLiabilityLegs(doc);
   await LiabilityEntryModel.deleteOne({ _id: eid });
   await Promise.all([...recalcTargets].map((personId) => recomputePersonRollup(personId)));
+  await syncBankCurrentBalancesFromLedger(bankIds);
   await createAuditLog({
     actorId,
     action: "liability.entry.delete",

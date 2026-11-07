@@ -94,3 +94,30 @@ export async function computeClosingBalanceActualByBankIds(
   }
   return totals;
 }
+
+/**
+ * Sync denormalized `Bank.currentBalance` from statement-equivalent closing.
+ * Liability journals and other ledger legs are included; call after any bank-leg mutation.
+ */
+export async function syncBankCurrentBalancesFromLedger(bankIds: string[]): Promise<Map<string, number>> {
+  const unique = [...new Set(bankIds.filter((id) => Types.ObjectId.isValid(id)))];
+  if (unique.length === 0) return new Map();
+  const objectIds = unique.map((id) => new Types.ObjectId(id));
+  const totals = await computeClosingBalanceActualByBankIds(objectIds);
+  await Promise.all(
+    unique.map((id) =>
+      BankModel.updateOne(
+        { _id: new Types.ObjectId(id) },
+        { $set: { currentBalance: Number(totals.get(id) ?? 0) } },
+      ),
+    ),
+  );
+  return totals;
+}
+
+/** Statement-equivalent available balance for one bank (same math as Method Account Statement). */
+export async function getBankAvailableBalance(bankId: string): Promise<number> {
+  if (!Types.ObjectId.isValid(bankId)) return 0;
+  const totals = await computeClosingBalanceActualByBankIds([new Types.ObjectId(bankId)]);
+  return Number(totals.get(bankId) ?? 0);
+}

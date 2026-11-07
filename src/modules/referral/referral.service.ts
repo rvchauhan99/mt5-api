@@ -3,6 +3,10 @@ import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
 import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
+import {
+  getBankAvailableBalance,
+  syncBankCurrentBalancesFromLedger,
+} from "../bank/bankClosingBalance";
 import { DepositModel } from "../deposit/deposit.model";
 import { createLiabilityEntry, deleteLiabilityEntryForReversal } from "../liability/liability.service";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
@@ -288,14 +292,13 @@ export async function settleReferralAccruals(
     if (!bank) throw new AppError("not_found", "Bank not found", 404);
     if (bank.status !== "active") throw new AppError("business_rule_error", "Bank is not active", 400);
 
-    const prevBal = Number(bank.currentBalance ?? bank.openingBalance ?? 0);
-    if (totalAmount > prevBal) {
+    const bankIdStr = String(bank._id);
+    const available = await getBankAvailableBalance(bankIdStr);
+    if (totalAmount > available) {
       throw new AppError("business_rule_error", "Insufficient bank balance for this referral settlement", 400);
     }
 
-    const bankBalanceAfter = prevBal - totalAmount;
-    bank.currentBalance = bankBalanceAfter;
-    await bank.save();
+    const bankBalanceAfter = available - totalAmount;
 
     try {
       const updateResult = await ReferralAccrualModel.updateMany(
@@ -319,18 +322,16 @@ export async function settleReferralAccruals(
       );
 
       if (updateResult.modifiedCount !== ids.length) {
-        bank.currentBalance = prevBal;
-        await bank.save();
         throw new AppError(
           "business_rule_error",
           "Settlement conflict: one or more accruals were already settled or changed",
           409,
         );
       }
+      await syncBankCurrentBalancesFromLedger([bankIdStr]);
     } catch (err) {
       if (!(err instanceof AppError && err.statusCode === 409)) {
-        bank.currentBalance = prevBal;
-        await bank.save().catch(() => undefined);
+        await syncBankCurrentBalancesFromLedger([bankIdStr]).catch(() => undefined);
       }
       throw err;
     }

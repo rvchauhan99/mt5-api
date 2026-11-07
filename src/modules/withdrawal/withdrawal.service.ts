@@ -6,7 +6,7 @@ import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
 import { BankModel } from "../bank/bank.model";
 import { bankDisplayName as formatBankDisplayName } from "../bank/bank.constants";
-import { computeClosingBalanceActualByBankIds } from "../bank/bankClosingBalance";
+import { syncBankCurrentBalancesFromLedger } from "../bank/bankClosingBalance";
 import { ExpenseModel } from "../expense/expense.model";
 import { LiabilityEntryModel } from "../liability/liability-entry.model";
 import { PlayerModel } from "../player/player.model";
@@ -336,18 +336,7 @@ function entryAtMsEqual(a: Date | undefined, b: Date | undefined): boolean {
 type HydratedWithdrawalDoc = HydratedDocument<WithdrawalDocument>;
 
 async function normalizeBankCurrentBalances(bankIds: string[]) {
-  const unique = [...new Set(bankIds.filter((id) => Types.ObjectId.isValid(id)))];
-  if (unique.length === 0) return;
-  const objectIds = unique.map((id) => new Types.ObjectId(id));
-  const totals = await computeClosingBalanceActualByBankIds(objectIds);
-  await Promise.all(
-    unique.map((id) =>
-      BankModel.updateOne(
-        { _id: new Types.ObjectId(id) },
-        { $set: { currentBalance: Number(totals.get(id) ?? 0) } },
-      ),
-    ),
-  );
+  await syncBankCurrentBalancesFromLedger(bankIds);
 }
 
 export async function createWithdrawal(
