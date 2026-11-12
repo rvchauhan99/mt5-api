@@ -21,6 +21,7 @@ import {
   exportLiabilityEntriesToBuffer,
   exportLiabilityLedgerToBuffer,
   exportLiabilityPersonsToBuffer,
+  exportLiabilityPersonWiseReportToBuffer,
   getLiabilityPersonLedger,
   getLiabilityReportPersonWise,
   getLiabilityReportSummary,
@@ -123,4 +124,18 @@ export async function liabilityPersonWiseReportController(_req: Request, res: Re
   const query = liabilityReportQuerySchema.parse(_req.query);
   const data = await getLiabilityReportPersonWise(query);
   res.status(StatusCodes.OK).json({ success: true, data });
+}
+
+export async function exportLiabilityPersonWiseReportController(req: Request, res: Response) {
+  const query = liabilityReportQuerySchema.parse(req.query);
+  const buffer = await exportLiabilityPersonWiseReportToBuffer(query);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="liability-person-wise-report.xlsx"`,
+  );
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+  res.status(StatusCodes.OK).send(buffer);
 }

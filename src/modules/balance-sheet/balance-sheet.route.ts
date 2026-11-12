@@ -18,6 +18,7 @@ import {
   balanceSheetDrilldownExportQuerySchema,
   balanceSheetDrilldownQuerySchema,
   balanceSheetExportQuerySchema,
+  balanceSheetMovementsExportQuerySchema,
   balanceSheetMovementsQuerySchema,
   balanceSheetQuerySchema,
   balanceSheetSummaryQuerySchema,
@@ -79,7 +80,7 @@ balanceSheetRouter.get(
 balanceSheetRouter.get(
   "/movements/export",
   permissionMiddleware(PERMISSIONS.REPORTS_BALANCE_SHEET),
-  validate({ query: balanceSheetMovementsQuerySchema }),
+  validate({ query: balanceSheetMovementsExportQuerySchema }),
   balanceSheetMovementsExportController,
 );
 

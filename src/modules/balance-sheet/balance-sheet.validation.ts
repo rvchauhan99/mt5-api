@@ -100,8 +100,15 @@ export const balanceSheetMovementsQuerySchema = z.object({
   sort: optionalTrimmed,
 });
 
+/** Export uses the same filters as list, without list pagination caps. */
+export const balanceSheetMovementsExportQuerySchema = balanceSheetMovementsQuerySchema.omit({
+  page: true,
+  pageSize: true,
+});
+
 export type BalanceSheetQuery = z.infer<typeof balanceSheetQuerySchema>;
 export type BalanceSheetDrilldownQuery = z.infer<typeof balanceSheetDrilldownQuerySchema>;
 export type BalanceSheetDrilldownExportQuery = z.infer<typeof balanceSheetDrilldownExportQuerySchema>;
 export type CreateBalanceSheetSnapshotBody = z.infer<typeof createBalanceSheetSnapshotBodySchema>;
 export type BalanceSheetMovementsQuery = z.infer<typeof balanceSheetMovementsQuerySchema>;
+export type BalanceSheetMovementsExportQuery = z.infer<typeof balanceSheetMovementsExportQuerySchema>;

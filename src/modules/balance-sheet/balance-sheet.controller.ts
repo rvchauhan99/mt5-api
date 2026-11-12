@@ -20,6 +20,7 @@ import {
   balanceSheetDrilldownExportQuerySchema,
   balanceSheetDrilldownQuerySchema,
   balanceSheetExportQuerySchema,
+  balanceSheetMovementsExportQuerySchema,
   balanceSheetMovementsQuerySchema,
   balanceSheetQuerySchema,
   balanceSheetSummaryQuerySchema,
@@ -98,7 +99,7 @@ export async function balanceSheetMovementsController(req: Request, res: Respons
 }
 
 export async function balanceSheetMovementsExportController(req: Request, res: Response) {
-  const query = balanceSheetMovementsQuerySchema.parse(req.query);
+  const query = balanceSheetMovementsExportQuerySchema.parse(req.query);
   const timeZone = resolveRequestTimeZone(req);
   const buffer = await exportBalanceSheetMovementsToBuffer(query, { timeZone });
   res.setHeader(

@@ -1,5 +1,5 @@
 import { Types } from "mongoose";
-import { generateExcelBuffer } from "../../shared/services/excel.service";
+import { generateExcelBuffer, generateMultiSheetExcelBuffer } from "../../shared/services/excel.service";
 import type { z } from "zod";
 import { AppError } from "../../shared/errors/AppError";
 import { createAuditLog } from "../audit/audit.service";
@@ -23,6 +23,7 @@ import {
   exportLiabilityEntryQuerySchema,
   exportLiabilityPersonQuerySchema,
   liabilityLedgerQuerySchema,
+  liabilityReportQuerySchema,
   listLiabilityEntryQuerySchema,
   listLiabilityPersonQuerySchema,
 } from "./liability.validation";
@@ -35,6 +36,7 @@ type ExportLiabilityPersonQuery = z.infer<typeof exportLiabilityPersonQuerySchem
 type ListLiabilityEntryQuery = z.infer<typeof listLiabilityEntryQuerySchema>;
 type ExportLiabilityEntryQuery = z.infer<typeof exportLiabilityEntryQuerySchema>;
 type LedgerQuery = z.infer<typeof liabilityLedgerQuerySchema>;
+type LiabilityReportQuery = z.infer<typeof liabilityReportQuerySchema>;
 type LiabilityViewMode = "platform" | "person";
 
 const EXPORT_MAX_ROWS = 10_000;
@@ -1462,4 +1464,76 @@ export async function getLiabilityReportPersonWise(query?: { viewMode?: string }
       viewMode,
     };
   });
+}
+
+export async function exportLiabilityPersonWiseReportToBuffer(
+  query?: LiabilityReportQuery,
+): Promise<Buffer> {
+  const [summary, rows] = await Promise.all([
+    getLiabilityReportSummary(query),
+    getLiabilityReportPersonWise(query),
+  ]);
+
+  const personSheet = rows.map((r) => ({
+    Name: r.name,
+    Active: r.isActive ? "Yes" : "No",
+    Side: r.sideLabel,
+    "Balance Abs": r.balanceAbs,
+    "Balance Signed": r.balance,
+    "Total Debits": r.totalDebits,
+    "Total Credits": r.totalCredits,
+    "View Mode": r.viewMode,
+  }));
+
+  const summarySheet = [
+    {
+      Metric: "Total Receivable",
+      Value: summary.totalReceivable,
+    },
+    {
+      Metric: "Total Payable",
+      Value: summary.totalPayable,
+    },
+    {
+      Metric: "Net Position",
+      Value: summary.netPosition,
+    },
+    {
+      Metric: "Net Position Side",
+      Value: summary.netPositionSide,
+    },
+    {
+      Metric: "Total Persons",
+      Value: summary.totalPersons,
+    },
+    {
+      Metric: "View Mode",
+      Value: summary.viewMode,
+    },
+  ];
+
+  return generateMultiSheetExcelBuffer([
+    {
+      name: "Person-wise",
+      data: personSheet,
+      columns: [
+        { header: "Name", key: "Name" },
+        { header: "Active", key: "Active" },
+        { header: "Side", key: "Side" },
+        { header: "Balance Abs", key: "Balance Abs" },
+        { header: "Balance Signed", key: "Balance Signed" },
+        { header: "Total Debits", key: "Total Debits" },
+        { header: "Total Credits", key: "Total Credits" },
+        { header: "View Mode", key: "View Mode" },
+      ],
+    },
+    {
+      name: "Summary",
+      data: summarySheet,
+      columns: [
+        { header: "Metric", key: "Metric" },
+        { header: "Value", key: "Value" },
+      ],
+    },
+  ]);
 }

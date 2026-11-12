@@ -12,9 +12,16 @@ import { bankDisplayName } from "../bank/bank.constants";
 import { ExpenseModel } from "../expense/expense.model";
 import { LiabilityEntryModel } from "../liability/liability-entry.model";
 import { LiabilityPersonModel } from "../liability/liability-person.model";
-import type { balanceSheetMovementsQuerySchema } from "./balance-sheet.validation";
+import type {
+  balanceSheetMovementsExportQuerySchema,
+  balanceSheetMovementsQuerySchema,
+} from "./balance-sheet.validation";
 
 type MovementsQuery = z.infer<typeof balanceSheetMovementsQuerySchema>;
+type MovementsExportQuery = z.infer<typeof balanceSheetMovementsExportQuerySchema>;
+
+/** Chunk size for paging all matching rows during export (avoids list pageSize.max(200)). */
+const EXPORT_PAGE_SIZE = 2000;
 
 export interface BalanceSheetMovementRow {
   id: string;
@@ -418,12 +425,26 @@ export async function getBalanceSheetMovements(
 }
 
 export async function exportBalanceSheetMovementsToBuffer(
-  query: MovementsQuery,
+  query: MovementsExportQuery,
   options?: { timeZone?: string },
 ): Promise<Buffer> {
-  const exportQuery = { ...query, page: 1, pageSize: 5000 };
-  const data = await getBalanceSheetMovements(exportQuery, options);
-  const sheet = data.rows.map((r) => ({
+  const rows: BalanceSheetMovementRow[] = [];
+  let page = 1;
+  let total = Infinity;
+
+  while (rows.length < total) {
+    const data = await getBalanceSheetMovements(
+      { ...query, page, pageSize: EXPORT_PAGE_SIZE },
+      options,
+    );
+    total = data.meta.total;
+    if (data.rows.length === 0) break;
+    rows.push(...data.rows);
+    if (rows.length >= total || data.rows.length < EXPORT_PAGE_SIZE) break;
+    page += 1;
+  }
+
+  const sheet = rows.map((r) => ({
     Date: r.date ? new Date(r.date).toISOString() : "",
     Type: r.type,
     Status: r.status,

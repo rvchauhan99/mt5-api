@@ -10,6 +10,7 @@ import {
   exportLiabilityEntryController,
   exportLiabilityLedgerController,
   exportLiabilityPersonController,
+  exportLiabilityPersonWiseReportController,
   liabilityPersonLedgerController,
   liabilityPersonWiseReportController,
   liabilitySummaryReportController,
@@ -24,6 +25,7 @@ import {
   liabilityEntryIdParamSchema,
   liabilityLedgerQuerySchema,
   liabilityPersonIdParamSchema,
+  liabilityReportQuerySchema,
   exportLiabilityEntryQuerySchema,
   exportLiabilityPersonQuerySchema,
   listLiabilityEntryQuerySchema,
@@ -123,6 +125,13 @@ liabilityRouter.get(
   "/reports/person-wise",
   permissionMiddleware(PERMISSIONS.LIABILITY_REPORT_VIEW),
   liabilityPersonWiseReportController,
+);
+
+liabilityRouter.get(
+  "/reports/person-wise/export",
+  permissionMiddleware(PERMISSIONS.LIABILITY_REPORT_VIEW),
+  validate({ query: liabilityReportQuerySchema }),
+  exportLiabilityPersonWiseReportController,
 );
 
 export { liabilityRouter };
