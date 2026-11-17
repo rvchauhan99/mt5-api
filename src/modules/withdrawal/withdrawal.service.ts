@@ -326,6 +326,16 @@ function payableFromAmounts(amount: number, reverseBonus: number, platformCurren
   return Math.max(0, roundMoneyToCurrency(raw, platformCurrency));
 }
 
+/** Charges (reverseBonus) must not exceed withdrawal amount (platform currency). */
+function assertChargesNotExceedAmount(amount: number, reverseBonus: number) {
+  if (!Number.isFinite(reverseBonus) || reverseBonus < 0) {
+    throw new AppError("validation_error", "Charges must be a number ≥ 0", 400);
+  }
+  if (reverseBonus > amount) {
+    throw new AppError("validation_error", "Charges cannot exceed withdrawal amount", 400);
+  }
+}
+
 function entryAtMsEqual(a: Date | undefined, b: Date | undefined): boolean {
   const ta = a ? a.getTime() : NaN;
   const tb = b ? b.getTime() : NaN;
@@ -389,6 +399,7 @@ export async function createWithdrawal(
     money.platformCurrency,
     money.operatedCurrency,
   );
+  assertChargesNotExceedAmount(money.amount, reverseBonus);
   const payableAmount = payableFromAmounts(money.amount, reverseBonus, money.platformCurrency);
   const playerLabel = `${player.playerId} · ${player.phone}`;
 
@@ -503,6 +514,7 @@ export async function updateWithdrawalByExchange(
     money.platformCurrency,
     money.operatedCurrency,
   );
+  assertChargesNotExceedAmount(money.amount, nextReverseBonus);
   const payableAmount = payableFromAmounts(money.amount, nextReverseBonus, money.platformCurrency);
   const prev = {
     accountNumber: doc.accountNumber,
@@ -1076,7 +1088,7 @@ export async function exportWithdrawalsToBuffer(
     { header: "Bank", key: "bankName" },
     { header: "IFSC", key: "ifsc" },
     { header: "Amount", transform: (r) => Math.round(Number(r.amount ?? 0)) },
-    { header: "Reverse Bonus", transform: (r) => Math.round(Number(r.reverseBonus ?? 0)) },
+    { header: "Charges", transform: (r) => Math.round(Number(r.reverseBonus ?? 0)) },
     { header: "Payable Amount", transform: (r) => Math.round(Number(r.payableAmount ?? 0)) },
     { header: "Status", key: "status" },
     { header: "UTR", key: "utr" },
@@ -1210,6 +1222,7 @@ async function amendWithdrawalPersonSettlement(
     money.platformCurrency,
     money.operatedCurrency,
   );
+  assertChargesNotExceedAmount(money.amount, reverseBonusPlatform);
   const oldPayable = Number(doc.payableAmount ?? payableFromAmounts(doc.amount, doc.reverseBonus ?? 0, money.platformCurrency));
   const newPayable = payableFromAmounts(money.amount, reverseBonusPlatform, money.platformCurrency);
   const nextRequestedAt = input.requestedAt
@@ -1469,6 +1482,7 @@ export async function amendWithdrawal(
     money.platformCurrency,
     money.operatedCurrency,
   );
+  assertChargesNotExceedAmount(money.amount, reverseBonusPlatform);
   const oldPayable = Number(doc.payableAmount ?? payableFromAmounts(doc.amount, doc.reverseBonus ?? 0, money.platformCurrency));
   const newPayable = payableFromAmounts(money.amount, reverseBonusPlatform, money.platformCurrency);
   const nextRequestedAt = input.requestedAt
