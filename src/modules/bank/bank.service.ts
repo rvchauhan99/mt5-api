@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { Types } from "mongoose";
+import PDFDocument from "pdfkit";
 import type { z } from "zod";
 import { generateExcelBuffer } from "../../shared/services/excel.service";
 import { AppError } from "../../shared/errors/AppError";
@@ -1046,4 +1047,223 @@ export async function createBankSettlement(
   });
 
   return doc.toObject();
+}
+
+function formatMoneyPdf(value: number, currency?: string): string {
+  const n = Number.isFinite(value) ? value : 0;
+  const formatted = n.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return currency ? `${currency} ${formatted}` : formatted;
+}
+
+function truncatePdf(text: string, max: number): string {
+  const t = String(text ?? "").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, Math.max(0, max - 1))}…`;
+}
+
+/**
+ * Read-only bank ledger PDF using the same filters as getBankLedger.
+ * Empty fromDate/toDate and entryType=all → full statement history.
+ */
+export async function exportBankLedgerToPdfBuffer(
+  bankId: string,
+  query: LedgerQuery,
+  options?: { timeZone?: string },
+): Promise<Buffer> {
+  const timeZone = options?.timeZone || DEFAULT_TIMEZONE;
+  const ledger = await getBankLedger(bankId, query, { timeZone });
+  const platformCurrency = await requirePlatformCurrency();
+
+  const periodLabel = [
+    query.fromDate?.trim() || "Start",
+    "to",
+    query.toDate?.trim() || "Today",
+  ].join(" ");
+  const entryLabel = query.entryType && query.entryType !== "all" ? query.entryType : "all";
+  const generatedAt = formatDateTimeForTimeZone(new Date(), timeZone);
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: "A4",
+      layout: "landscape",
+      margin: 36,
+      info: {
+        Title: `Bank Statement — ${ledger.bank.displayName || ledger.bank.method}`,
+        Author: "MT5 CRM",
+      },
+    });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const left = doc.page.margins.left;
+
+    const drawHeader = () => {
+      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0f172a")
+        .text(ledger.bank.displayName || bankDisplayName(ledger.bank), left, doc.page.margins.top, {
+          width: pageWidth,
+        });
+      doc.moveDown(0.3);
+      doc.fontSize(9).font("Helvetica").fillColor("#475569")
+        .text(
+          `Method Account Statement  |  Period: ${periodLabel}  |  Entry: ${entryLabel}  |  Generated: ${generatedAt}`,
+          { width: pageWidth },
+        );
+      doc.moveDown(0.4);
+      doc.fontSize(8).fillColor("#64748b")
+        .text(
+          [
+            ledger.bank.holderName ? `Holder: ${ledger.bank.holderName}` : null,
+            ledger.bank.bankName ? `Bank: ${ledger.bank.bankName}` : null,
+            ledger.bank.accountNumber ? `A/C: ${ledger.bank.accountNumber}` : null,
+            ledger.bank.method ? `Method: ${ledger.bank.method}` : null,
+          ]
+            .filter(Boolean)
+            .join("  ·  "),
+          { width: pageWidth },
+        );
+      doc.moveDown(0.6);
+
+      const summaryY = doc.y;
+      const colW = pageWidth / 4;
+      const summary = [
+        { label: "Opening Balance", value: formatMoneyPdf(ledger.periodOpeningBalance, platformCurrency) },
+        { label: "Total Credits", value: formatMoneyPdf(ledger.totalCredits, platformCurrency) },
+        { label: "Total Debits", value: formatMoneyPdf(ledger.totalDebits, platformCurrency) },
+        { label: "Closing Balance", value: formatMoneyPdf(ledger.periodClosingBalance, platformCurrency) },
+      ];
+      summary.forEach((item, i) => {
+        const x = left + i * colW;
+        doc.fontSize(7).font("Helvetica").fillColor("#94a3b8").text(item.label.toUpperCase(), x, summaryY, {
+          width: colW - 8,
+        });
+        doc.fontSize(11).font("Helvetica-Bold").fillColor("#0f172a").text(item.value, x, summaryY + 12, {
+          width: colW - 8,
+        });
+      });
+      doc.y = summaryY + 36;
+      doc.moveDown(0.4);
+
+      if (ledger.totalBonusGiven > 0 || ledger.totalBonusReversed > 0) {
+        doc.fontSize(8).font("Helvetica").fillColor("#b45309")
+          .text(
+            `Off-balance memos — Bonus given: ${formatMoneyPdf(ledger.totalBonusGiven, platformCurrency)}  |  Bonus reversed: ${formatMoneyPdf(ledger.totalBonusReversed, platformCurrency)}`,
+            { width: pageWidth },
+          );
+        doc.moveDown(0.4);
+      }
+    };
+
+    // Column layout (landscape A4 usable ~770pt)
+    const cols = [
+      { key: "at", label: "Date & Time", width: 95 },
+      { key: "desc", label: "Description", width: 175 },
+      { key: "ref", label: "Trader / Ref", width: 100 },
+      { key: "op", label: "Operated", width: 75, align: "right" as const },
+      { key: "fx", label: "CCY / Rate", width: 70 },
+      { key: "cr", label: "Credit (CR)", width: 80, align: "right" as const },
+      { key: "dr", label: "Debit (DR)", width: 80, align: "right" as const },
+      { key: "bal", label: "Balance", width: 90, align: "right" as const },
+    ];
+    const rowHeight = 16;
+    const headerRowH = 18;
+
+    const drawTableHeader = () => {
+      let x = left;
+      const y = doc.y;
+      doc.rect(left, y, pageWidth, headerRowH).fill("#f1f5f9");
+      doc.fillColor("#334155").font("Helvetica-Bold").fontSize(7);
+      for (const col of cols) {
+        doc.text(col.label, x + 2, y + 5, {
+          width: col.width - 4,
+          align: col.align ?? "left",
+        });
+        x += col.width;
+      }
+      doc.y = y + headerRowH + 2;
+    };
+
+    const ensureSpace = (needed: number) => {
+      const bottom = doc.page.height - doc.page.margins.bottom;
+      if (doc.y + needed > bottom) {
+        doc.addPage();
+        drawHeader();
+        drawTableHeader();
+      }
+    };
+
+    drawHeader();
+    drawTableHeader();
+
+    if (ledger.rows.length === 0) {
+      ensureSpace(24);
+      doc.font("Helvetica").fontSize(9).fillColor("#64748b")
+        .text("No transactions found for the selected period.", left, doc.y + 8, { width: pageWidth });
+    } else {
+      for (const r of ledger.rows) {
+        ensureSpace(rowHeight + 2);
+        const y = doc.y;
+        const credit = r.direction === "credit" ? formatMoneyPdf(r.amount, platformCurrency) : "—";
+        const debit = r.direction === "debit" ? formatMoneyPdf(r.amount, platformCurrency) : "—";
+        const operated =
+          r.operatedAmount != null && Number.isFinite(Number(r.operatedAmount))
+            ? formatMoneyPdf(Number(r.operatedAmount), r.operatedCurrency || undefined)
+            : "—";
+        const fx =
+          r.operatedCurrency || r.exchangeRate != null
+            ? [r.operatedCurrency, r.exchangeRate != null ? String(r.exchangeRate) : null]
+                .filter(Boolean)
+                .join(" / ")
+            : "—";
+        const descParts = [r.label, r.utr ? `UTR: ${r.utr}` : null, r.bonusMemo ? String(r.bonusMemo) : null]
+          .filter(Boolean)
+          .join(" · ");
+        const ref = [r.playerName, r.createdByName].filter(Boolean).join(" / ") || "—";
+
+        const cells: Record<string, string> = {
+          at: String(r.at ?? ""),
+          desc: truncatePdf(descParts, 80),
+          ref: truncatePdf(ref, 40),
+          op: operated,
+          fx: truncatePdf(fx, 24),
+          cr: credit,
+          dr: debit,
+          bal: formatMoneyPdf(r.balanceAfter, platformCurrency),
+        };
+
+        doc.font("Helvetica").fontSize(7).fillColor("#0f172a");
+        let x = left;
+        for (const col of cols) {
+          doc.text(cells[col.key] ?? "", x + 2, y + 3, {
+            width: col.width - 4,
+            align: col.align ?? "left",
+            lineBreak: false,
+          });
+          x += col.width;
+        }
+        doc.y = y + rowHeight;
+        doc
+          .strokeColor("#e2e8f0")
+          .lineWidth(0.5)
+          .moveTo(left, doc.y)
+          .lineTo(left + pageWidth, doc.y)
+          .stroke();
+      }
+    }
+
+    doc.moveDown(1);
+    ensureSpace(40);
+    doc.font("Helvetica").fontSize(8).fillColor("#64748b")
+      .text(
+        `Rows: ${ledger.rows.length}  ·  Opening ${formatMoneyPdf(ledger.periodOpeningBalance, platformCurrency)}  ·  Closing ${formatMoneyPdf(ledger.periodClosingBalance, platformCurrency)}`,
+        { width: pageWidth },
+      );
+
+    doc.end();
+  });
 }

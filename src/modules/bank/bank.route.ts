@@ -9,6 +9,7 @@ import {
   createBankController,
   createBankSettlementController,
   exportBankController,
+  exportBankLedgerController,
   getBankComputedClosingController,
   listBankController,
   listBankSettlementsController,
@@ -49,6 +50,12 @@ bankRouter.post(
   requireSuperadminMiddleware,
   validate({ params: bankIdParamSchema, body: createBankSettlementBodySchema }),
   createBankSettlementController,
+);
+bankRouter.get(
+  "/:id/ledger/export",
+  permissionMiddleware(PERMISSIONS.BANK_STATEMENT),
+  validate({ params: bankIdParamSchema, query: bankLedgerQuerySchema }),
+  exportBankLedgerController,
 );
 bankRouter.get(
   "/:id/ledger",

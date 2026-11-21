@@ -3,6 +3,7 @@ import { StatusCodes } from "http-status-codes";
 import {
   createBank,
   createBankSettlement,
+  exportBankLedgerToPdfBuffer,
   exportBanksToBuffer,
   getBankComputedClosingBalance,
   getBankLedger,
@@ -52,6 +53,18 @@ export async function bankLedgerController(req: Request, res: Response) {
   const timeZone = resolveRequestTimeZone(req);
   const data = await getBankLedger(id, query, { timeZone });
   res.status(StatusCodes.OK).json({ success: true, data });
+}
+
+export async function exportBankLedgerController(req: Request, res: Response) {
+  const { id } = bankIdParamSchema.parse(req.params);
+  const query = bankLedgerQuerySchema.parse(req.query);
+  const timeZone = resolveRequestTimeZone(req);
+  const buffer = await exportBankLedgerToPdfBuffer(id, query, { timeZone });
+  const stamp = new Date().toISOString().slice(0, 10);
+  const filename = `bank-statement-${id.slice(-6)}-${stamp}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.status(StatusCodes.OK).send(buffer);
 }
 
 export async function listBankSettlementsController(req: Request, res: Response) {
